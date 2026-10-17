@@ -71,3 +71,12 @@ def test_step_nonfinite_target_holds(kin, gains):
     bad.lm_img[:] = np.nan
     q2, status = p.step(bad, 0.01)
     assert status == "NO HAND" and np.array_equal(q1, q2)
+
+
+def test_step_uncalibrated_still_records_features(kin, gains):
+    p = MirrorPipeline(kin, None, gains, None)
+    q, status = p.step(obs(), 0.0)
+    assert status == "UNCALIBRATED" and np.allclose(q, READY_Q)
+    assert p.last_features is not None
+    p.step(None, 0.01)
+    assert p.last_features is None

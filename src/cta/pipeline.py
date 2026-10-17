@@ -44,11 +44,12 @@ class MirrorPipeline:
 
     def step(self, obs: HandObservation | None, t: float) -> tuple[np.ndarray, str]:
         self.last_features = None
+        f = self._features(obs) if obs is not None else None
         if self.cal is None:
+            self.last_features = f  # recorded even uncalibrated (paired takes still need them)
             return READY_Q.astype(float).copy(), "UNCALIBRATED"
         if obs is None:
             return self.q_cmd.copy(), "NO HAND"
-        f = self._features(obs)
         pos, pitch, roll, grip = map_to_target(f, self.cal, self.gains)
         if not np.all(np.isfinite([*pos, pitch, roll, grip])):
             return self.q_cmd.copy(), "NO HAND"

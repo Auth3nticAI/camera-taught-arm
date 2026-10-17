@@ -70,3 +70,57 @@ def test_autosave_writes_partial(tmp_path):
         assert load_session(tmp_path / "s")["t"].shape == (1,)
     finally:
         r.close()
+
+
+def test_status_and_smoother_roundtrip(tmp_path):
+    from cta.recorder import STATUS_CODES
+    with SessionRecorder(tmp_path, "s", {}, video_size=SIZE) as r:
+        for st, sm in [("UNCALIBRATED", 1), ("NO HAND", 0), ("TRACKING", 1)]:
+            r.add(0.0, None, None, np.zeros(6), None, None, _rgb(), status=STATUS_CODES[st], smoother_on=sm)
+    d = load_session(tmp_path / "s")
+    assert d["status"].dtype == np.uint8 and d["status"].tolist() == [0, 1, 2]
+    assert d["smoother_on"].dtype == np.int8 and d["smoother_on"].tolist() == [1, 0, 1]
+
+
+def test_save_retries_replace(tmp_path, monkeypatch):
+    import os
+    real, calls = os.replace, []
+
+    def flaky(a, b):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise PermissionError("locked")
+        return real(a, b)
+
+    monkeypatch.setattr("cta.recorder.time.sleep", lambda s: None)
+    monkeypatch.setattr("cta.recorder.os.replace", flaky)
+    r = SessionRecorder(tmp_path, "s", {}, autosave_s=1e9, video_size=SIZE)
+    _add(r)
+    r.close()
+    assert len(calls) == 3
+    assert load_session(tmp_path / "s")["t"].shape == (1,)
+
+
+def test_locked_file_never_raises_and_keeps_tmp(tmp_path, monkeypatch, capsys):
+    def locked(a, b):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr("cta.recorder.time.sleep", lambda s: None)
+    monkeypatch.setattr("cta.recorder.os.replace", locked)
+    r = SessionRecorder(tmp_path, "s", {}, autosave_s=0, video_size=SIZE)
+    _add(r)  # autosave fails: must not raise
+    _add(r)
+    r.close()  # final save fails: must not raise
+    assert (tmp_path / "s" / "frames.tmp.npz").exists()
+    assert "frames.tmp.npz" in capsys.readouterr().out
+    assert load_session(tmp_path / "s")["t"].shape == (2,)  # falls back to tmp
+
+
+def test_load_session_missing_and_list_sessions(tmp_path):
+    from cta.recorder import list_sessions
+    (tmp_path / "orphan_01").mkdir()
+    with pytest.raises(FileNotFoundError):
+        load_session(tmp_path / "orphan_01")
+    with SessionRecorder(tmp_path, "good_01", {}, video_size=SIZE) as r:
+        _add(r)
+    assert [p.name for p in list_sessions(tmp_path, "*_01")] == ["good_01"]

@@ -2,6 +2,12 @@
 
 Layout under <root>/<name>/: frames.npz, human.mp4 (frame i <-> row i), meta.json.
 Joint vectors are radians; absent data is NaN.
+
+Per-row codes:
+  status (uint8): 0 UNCALIBRATED, 1 NO HAND, 2 TRACKING, 255 unknown. Mask rows with status != 2
+    (or hand_present) before training on feats; UNCALIBRATED rows carry features but the pipeline
+    command is the constant READY_Q.
+  smoother_on (int8): 1 smoother on, 0 off, -1 unknown.
 """
 from __future__ import annotations
 
@@ -18,6 +24,10 @@ from cta.features import HandFeatures
 from cta.hands import HandObservation
 
 VIDEO_FPS = 60
+STATUS_CODES = {"UNCALIBRATED": 0, "NO HAND": 1, "TRACKING": 2}
+STATUS_UNKNOWN = 255
+_REPLACE_TRIES = 5
+_REPLACE_SLEEP_S = 0.1
 
 
 def git_commit() -> str:
@@ -43,7 +53,8 @@ def _vec(q: np.ndarray | None) -> np.ndarray:
 
 class SessionRecorder:
     _SHAPES = {"t": (), "hand_present": (), "lm_img": (21, 3), "lm_world": (21, 3), "feats": (6,),
-               "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,)}
+               "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,), "status": (), "smoother_on": ()}
+    _DTYPES = {"hand_present": bool, "status": np.uint8, "smoother_on": np.int8}
 
     def __init__(self, root: Path, name: str, meta: dict, autosave_s: float = 30.0,
                  video_size: tuple[int, int] = (1280, 720)):
@@ -63,12 +74,11 @@ class SessionRecorder:
         self._last_save = time.monotonic()
 
     def _alloc(self, k: str) -> np.ndarray:
-        dt = bool if k == "hand_present" else float
-        return np.zeros((self._cap, *self._SHAPES[k]), dtype=dt)
+        return np.zeros((self._cap, *self._SHAPES[k]), dtype=self._DTYPES.get(k, float))
 
     def add(self, t: float, obs: HandObservation | None, feats: HandFeatures | None,
             q_baseline: np.ndarray, q_leader: np.ndarray | None, q_follower: np.ndarray | None,
-            rgb: np.ndarray) -> None:
+            rgb: np.ndarray, status: int = STATUS_UNKNOWN, smoother_on: int = -1) -> None:
         if self._closed:
             raise RuntimeError("recorder is closed")
         if self.n == self._cap:
@@ -85,24 +95,45 @@ class SessionRecorder:
         b["q_baseline"][i] = _vec(q_baseline)
         b["q_leader"][i] = _vec(q_leader)
         b["q_follower"][i] = _vec(q_follower)
+        b["status"][i] = status
+        b["smoother_on"][i] = smoother_on
         w, h = self.video_size
         frame = rgb if (rgb.shape[1], rgb.shape[0]) == (w, h) else cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
         self._video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))  # a row always gets a frame
         self.n += 1
         if time.monotonic() - self._last_save >= self.autosave_s:
-            self.save()
+            try:
+                self.save()
+            except Exception as e:  # e.g. Defender / a sync holds frames.npz; the next autosave retries
+                print(f"WARNING: autosave failed ({e}); will retry")
+                self._last_save = time.monotonic()
 
     def save(self) -> None:
         tmp = self.dir / "frames.tmp.npz"
         np.savez(tmp, **{k: a[: self.n] for k, a in self._buf.items()})
-        os.replace(tmp, self.dir / "frames.npz")
+        for attempt in range(_REPLACE_TRIES):
+            try:
+                os.replace(tmp, self.dir / "frames.npz")
+                break
+            except OSError:  # PermissionError on a locked target (Windows)
+                if attempt == _REPLACE_TRIES - 1:
+                    raise
+                time.sleep(_REPLACE_SLEEP_S)
         self._last_save = time.monotonic()
 
     def close(self) -> None:
+        """Final save. Never raises on a save failure (caller still has arms to close)."""
         if self._closed:
             return
         try:
             self.save()
+        except Exception as e:
+            bar = "!" * 70
+            print(bar)
+            print(f"!! FINAL SAVE FAILED ({e}). Your data is in:")
+            print(f"!!   {self.dir / 'frames.tmp.npz'}")
+            print("!! rename it to frames.npz once the lock is gone.")
+            print(bar)
         finally:
             self._closed = True
             self._video.release()
@@ -115,5 +146,19 @@ class SessionRecorder:
 
 
 def load_session(path: Path) -> dict[str, np.ndarray]:
-    with np.load(Path(path) / "frames.npz") as z:
+    path = Path(path)
+    f = path / "frames.npz"
+    if not f.exists():
+        tmp = path / "frames.tmp.npz"
+        if not tmp.exists():
+            raise FileNotFoundError(f"no frames.npz (or frames.tmp.npz) in {path}")
+        print(f"WARNING: {f.name} missing in {path}; loading {tmp.name}")
+        f = tmp
+    with np.load(f) as z:
         return {k: z[k] for k in z.files}
+
+
+def list_sessions(root: Path, pattern: str = "*") -> list[Path]:
+    """Take directories under root matching pattern that actually hold frames (skips orphans)."""
+    return sorted(p for p in Path(root).glob(pattern)
+                  if p.is_dir() and ((p / "frames.npz").exists() or (p / "frames.tmp.npz").exists()))
