@@ -1,0 +1,39 @@
+[project]
+name = "camera-taught-arm"
+version = "0.1.0"
+description = "Webcam hand tracking to SO-101 robot arm (PyTorch class project)"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "lerobot[feetech]==0.4.4",
+    "mediapipe==1.1.1",
+    "mujoco==3.16.0",
+    "mujoco-menagerie==2026.10.3",
+    "opencv-contrib-python==4.12.0.88",
+    "torch",
+    "torchvision",
+    "tensorboard",
+    "pytest",
+]
+
+[project.scripts]
+cta-mirror = "cta.apps.mirror:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cta"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

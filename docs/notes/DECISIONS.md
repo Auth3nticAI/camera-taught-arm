@@ -1,0 +1,81 @@
+# Decision Log
+
+Every engineering decision: what was asked, the options, **Tray's call**, why, and how it turned out. This log is the source material for both decks.
+
+Format: `D-## · date · decision` → options → **choice** → why → outcome (filled in later).
+
+---
+
+### D-A · 2026-10-16 · Project direction
+- **Options:** gesture-controlled effects (the LinkedIn HandTrack idea), touchless control, sign language → text, a rehab coach, 10 robotics-data ideas (see `reports/Webcam motion capture for robotics.md`)
+- **Choice:** human motion → robot data/control (robotics), with a startup framing
+- **Why:** the LinkedIn project uses hand-written rules, with no neural network and no PyTorch, so it would score B at best. Robotics data is a funded market bottleneck: Figure has paid contributors $15M, and XDOF has reported a ~$1.2B valuation on cheap teleop capture.
+- **Outcome:** —
+
+### D-B · 2026-10-16 · Which robotics build
+- **Options:** (A) the hand drives the real SO-101 · (B) the fingers drive a simulated 5-finger robot hand · (C) both
+- **Choice:** **A**
+- **Why:** it uses the real arm, enables block picking and autonomy, and is the strongest startup story. B is a faster version of a free library (`dex-retargeting`). C doubles the work in 8 days.
+- **Outcome:** —
+
+### D-C · 2026-10-16 · Hardware
+- **Choice:** Seeed SO-ARM101 Pro, assembled (leader + follower, 12V), $427.76 order including the innomaker 130° USB camera; Raspberry Pi 5 already on hand
+- **Why:** it arrives in one day. The leader arm doubles as a **ground-truth sensor** for measuring webcam accuracy in degrees.
+- **Outcome:** arriving 2026-10-17
+
+### D-D · 2026-10-16 · Control mapping
+- **Options:** absolute same-side · relative/clutch · mirrored
+- **Choice:** **absolute, same-side** (calibrate a "home" pose, then hand box → arm workspace)
+- **Why:** the most intuitive for collecting demos, and the easiest to explain on stage
+- **Outcome:** —
+
+### D-E · 2026-10-16 · Machines and demo venue
+- **Choice:** develop on both the desktop (RTX 4070 Ti) and the laptop (MSI GE76, RTX 3080 Laptop GPU); train on the desktop; **demo on the laptop**
+- **Why:** portability. The laptop's GPU can run the full loop live, including the pick policy.
+- **Outcome:** —
+
+### D-F · 2026-10-16 · Cameras
+- **Choice:** buy a wrist camera plus a webcam to watch the human; the innomaker goes overhead
+- **Why:** two-view (wrist + overhead) is the standard SO-101 policy setup, and pick policies are more reliable with it when there are only ~50 demos
+- **Outcome:** —
+
+### D-G · 2026-10-16 · Autonomy task definition
+- **Choice:** pick and place into a bin; red and green blocks both always present; positions varied within ~20×20 cm
+- **Why:** gives a clear pass/fail for counting success rate, and proves the arm "knows which block"
+- **Outcome:** —
+
+### D-H · 2026-10-16 · Presentation venue
+- **Choice:** online (Oct 24) from the laptop, **away from home (no arm)**. The recorded video shows the real arm (mirroring + autonomous pick); the code runs live on the laptop driving the **simulated twin** from the laptop webcam.
+- **Why:** the arm can't travel. The video proves the hardware works; the live sim run satisfies "run the code to show results."
+- **Consequence:** new requirement R1, a no-hardware mode. The video must be recorded before leaving home.
+- **Outcome:** —
+
+### D-I · 2026-10-16 · Arm deadline and demo source
+- **Constraint:** everything needing the arm (recordings + video) is done by **Mon Oct 19**; Tray is away afterward
+- **Options:** leader-arm demos · **webcam-taught demos** · drop autonomy
+- **Choice:** **webcam-taught demos** for the pick policy
+- **Why:** proves the startup claim end to end ("a camera taught it")
+- **Safeguard:** Sunday ~2 PM checkpoint where Tray decides whether mirroring is good enough or switches to the leader arm
+- **Consequence:** ACT replaces SmolVLA (it trains overnight on ~50 demos); SmolVLA goes to the roadmap
+- **Outcome:** —
+
+### D-J · 2026-10-17 · Where things live
+- **Options:** Hugging Face Hub · Google Drive · GitHub LFS
+- **Choice:** code, docs, and notes in **GitHub** (private); recordings, datasets, and models in **Hugging Face Hub** (private)
+- **Why:** no more OneDrive. Regular GitHub can't hold videos (100 MB file cap; LFS free tier is 1 GB). HF is built for datasets and models, LeRobot syncs with it natively, and it can go public later as a showcase.
+- **Outcome:** —
+
+### D-K · 2026-10-17 · Build process
+- **Choice:** subagent-driven execution: a fresh implementer per task, plus a reviewer per task
+- **Why:** more thorough review of each piece
+- **Outcome:** —
+
+### D-L · 2026-10-17 · Follow the course text
+- **Choice:** the training code follows *Deep Learning with PyTorch* idioms (ch. 5–8, 10–13, 15); mapping in spec §8c
+- **Why:** shows the course material applied, which supports the A
+- **Outcome:** —
+
+---
+
+## Open (waiting for Tray)
+D-01 demo-day priority · D-03 label source · D-04 depth cue · D-05 smoother architecture · D-06 ACT vs SmolVLA · D-07 where the motors connect · D-09 name · D-10 confirm the label-shift plan, the smoother target, and the gate targets. Details are in `docs/specs/2026-10-16-camera-taught-arm-design.md` §7.

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.superpowers/
+*.pdf
+data/
+runs/
+*.task
+*.mp4
+*.npz
