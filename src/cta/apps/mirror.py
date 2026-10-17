@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 import time
 from pathlib import Path
@@ -16,8 +17,10 @@ from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
 from cta.pipeline import MirrorPipeline
+from cta.recorder import SessionRecorder, git_commit, next_take_name
 from cta.robot_io import FollowerArm, LeaderArm, clamp_margin, select_command
 from cta.twin import Twin
+from cta.units import SimRealMap
 
 
 def _start_keys(events: set[str]):
@@ -25,12 +28,12 @@ def _start_keys(events: set[str]):
     try:
         from pynput import keyboard
     except Exception as e:  # headless / no backend
-        print(f"keyboard control unavailable ({e}); c/s/q keys disabled")
+        print(f"keyboard control unavailable ({e}); c/s/r/q keys disabled")
         return None
 
     def on_press(key):
         ch = getattr(key, "char", None)
-        if ch and ch.lower() in "csq":
+        if ch and ch.lower() in "csrq":
             events.add(ch.lower())
 
     lis = keyboard.Listener(on_press=on_press)
@@ -51,9 +54,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hand", choices=["right", "left"], default="right")
     ap.add_argument("--mirrored", action="store_true", help="camera image is already mirrored")
     ap.add_argument("--calib", default=None, help="calibration JSON path")
+    ap.add_argument("--record", default=None, metavar="NAME",
+                    help="enable recording; 'r' key starts/stops a take saved as sessions/NAME_NN")
+    ap.add_argument("--autostart-record", action="store_true", help="start the first take immediately (smoke runs)")
     ap.add_argument("--max-frames", type=int, default=0, help="exit after N frames (smoke run)")
     args = ap.parse_args(argv)
 
+    if args.autostart_record and not args.record:
+        ap.error("--autostart-record requires --record NAME")
     if args.robot == "so101":
         if not args.follower_port:
             ap.error("--robot so101 requires --follower-port")
@@ -77,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     tracker = twin = None
     follower = leader = None
     keys = None
+    rec: SessionRecorder | None = None
     rc = 0
     try:
         if not cam.is_open():
@@ -120,7 +129,40 @@ def main(argv: list[str] | None = None) -> int:
         dash = Dashboard()
         events: set[str] = set()
         keys = _start_keys(events)
-        print("keys: c = calibrate (hand at home), s = toggle smoother, q = quit")
+        print("keys: c = calibrate (hand at home), s = toggle smoother, "
+              + ("r = start/stop take, " if args.record else "") + "q = quit")
+        sessions_root = data_dir() / "sessions"
+
+        def start_take() -> SessionRecorder:
+            name = next_take_name(sessions_root, args.record)
+            meta = {
+                "mode": "paired" if args.mode == "paired" else "free",
+                "robot": args.robot, "camera_mode": dataclasses.asdict(mode),
+                "calibration": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in vars(pipe.cal).items()}
+                if pipe.cal is not None else None,
+                "gains": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in vars(gains).items()},
+                "sim_real_map": {"sign": SimRealMap.load().sign.tolist(),
+                                 "offset_deg": SimRealMap.load().offset_deg.tolist()},
+                "git_commit": git_commit(), "hand": args.hand, "mirrored": args.mirrored,
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            r = SessionRecorder(sessions_root, name, meta)
+            print(f"REC START: {r.dir}")
+            return r
+
+        def stop_take() -> None:
+            nonlocal rec
+            r, rec = rec, None
+            if r is None:
+                return
+            try:
+                r.close()
+            finally:
+                print(f"REC STOP: {r.n} frames saved to {r.dir}")
+                print("push the data: uv run python scripts/sync_data.py push --what sessions")
+
+        if args.autostart_record:
+            rec = start_take()
 
         fps_ema = 0.0
         lat_ema = 0.0
@@ -157,7 +199,17 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     pipe.set_smoother(None)
                 print(f"smoother {'ON' if pipe.smoother else 'OFF'}")
+            if "r" in events:
+                events.discard("r")
+                if not args.record:
+                    print("recording not enabled; start with --record NAME")
+                elif rec is None:
+                    rec = start_take()
+                else:
+                    stop_take()
             q, status = pipe.step(obs, t_frame)
+            q_baseline = q.copy()
+            q_leader = None
             extra = None
             if follower is not None:
                 dt = 1 / 60 if last_cmd_t is None else t_frame - last_cmd_t
@@ -176,6 +228,9 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"WARNING: command rejected, holding ({e})")
                         warned_nonfinite = True
                 q = prev
+            if rec is not None:
+                q_foll = follower.read() if follower is not None else None
+                rec.add(t_frame, obs, pipe.last_features, q_baseline, q_leader, q_foll, rgb)
             latency_ms = (time.perf_counter() - t_frame) * 1000
             now = time.perf_counter()
             if last_t is not None and now > last_t:
@@ -187,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             heavy = n % 2 == 0  # twin render + images at most every 2nd frame
             twin_rgb = twin.render(q) if heavy else None
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
-                           fps_ema, lat_ema, status, loop_ema, extra_rad=extra)
+                           fps_ema, lat_ema, f"{status} REC" if rec is not None else status, loop_ema, extra_rad=extra)
             loop_ms = (time.perf_counter() - t_frame) * 1000  # frame read -> end of iteration
             loop_ema = loop_ms if loop_ema == 0.0 else 0.9 * loop_ema + 0.1 * loop_ms
             if args.max_frames and n >= args.max_frames:
@@ -196,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if rec is not None:  # stop_take is defined whenever rec can be set
+            try:
+                stop_take()
+            except Exception as e:
+                print(f"WARNING: recorder close failed: {e}")
         for arm in (follower, leader):  # disconnect disables torque; never skip the rest
             if arm is not None:
                 try:
