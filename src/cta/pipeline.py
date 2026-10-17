@@ -23,6 +23,12 @@ class MirrorPipeline:
         self.q_cmd = READY_Q.astype(float).copy()
         self.last_features: HandFeatures | None = None
 
+    def reset_to(self, q: np.ndarray) -> None:
+        """Seed the held command / IK warm start from the real pose."""
+        self.q_cmd = np.clip(np.asarray(q, dtype=float), SIM_LIMITS[:, 0], SIM_LIMITS[:, 1])
+        if self.smoother is not None:
+            self.smoother.reset()
+
     def set_smoother(self, smoother: OneEuro | None) -> None:
         self.smoother = smoother
         if smoother is not None:

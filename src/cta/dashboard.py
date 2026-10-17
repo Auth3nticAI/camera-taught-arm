@@ -18,7 +18,7 @@ class Dashboard:
 
     def log_frame(self, rgb: np.ndarray | None, obs: HandObservation | None, twin_rgb: np.ndarray | None,
                   q_cmd: np.ndarray, fps: float, latency_ms: float, status: str,
-                  loop_ms: float | None = None, extra_deg: dict[str, np.ndarray] | None = None) -> None:
+                  loop_ms: float | None = None, extra_rad: dict[str, np.ndarray] | None = None) -> None:
         """Scalars/status every call; images only when rgb / twin_rgb are given (decimation)."""
         if rgb is not None:
             h, w = rgb.shape[:2]
@@ -34,7 +34,7 @@ class Dashboard:
             rr.log("twin/image", rr.Image(twin_rgb))
         for i, name in enumerate(JOINTS):
             rr.log(f"joints/{name}", rr.Scalars(float(np.degrees(q_cmd[i]))))
-        for prefix, vec in (extra_deg or {}).items():
+        for prefix, vec in (extra_rad or {}).items():
             for i, name in enumerate(JOINTS):
                 rr.log(f"{prefix}/{name}", rr.Scalars(float(np.degrees(vec[i]))))
         rr.log("stats/fps", rr.Scalars(float(fps)))

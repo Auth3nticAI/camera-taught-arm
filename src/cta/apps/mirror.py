@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 from cta.camera import Camera, CameraMode, camera_check
 from cta.dashboard import Dashboard
 from cta.filters import OneEuro
@@ -14,7 +16,7 @@ from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
 from cta.pipeline import MirrorPipeline
-from cta.robot_io import FollowerArm, LeaderArm, clamp_margin
+from cta.robot_io import FollowerArm, LeaderArm, clamp_margin, select_command
 from cta.twin import Twin
 
 
@@ -43,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--leader-port", default=None, help="leader serial port (required for --mode paired)")
     ap.add_argument("--mode", choices=["mirror", "paired"], default="mirror",
                     help="mirror: camera drives the follower; paired: leader drives the follower, camera only logged")
+    ap.add_argument("--max-speed-dps", type=float, default=90.0,
+                    help="joint speed limit for commands sent to the arm, deg/s (default 90)")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--hand", choices=["right", "left"], default="right")
     ap.add_argument("--mirrored", action="store_true", help="camera image is already mirrored")
@@ -53,8 +57,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.robot == "so101":
         if not args.follower_port:
             ap.error("--robot so101 requires --follower-port")
+        if args.max_speed_dps <= 0:
+            ap.error("--max-speed-dps must be > 0")
         if args.mode == "paired" and not args.leader_port:
             ap.error("--mode paired requires --leader-port")
+
+    if args.robot == "none" and args.mode == "paired":
+        ap.error("--mode paired requires --robot so101")
+    max_speed = float(np.radians(args.max_speed_dps))
 
     calib_path = Path(args.calib) if args.calib else data_dir() / "calibration.json"
     cal = None
@@ -95,6 +105,13 @@ def main(argv: list[str] | None = None) -> int:
         gains = MapGains.from_kinematics(kin)
         smoother = OneEuro()
         pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
+        prev = None
+        if follower is not None:
+            prev = clamp_margin(follower.read())  # actual pose: start from reality, never from READY_Q
+            pipe.reset_to(prev)
+            print(f"follower pose (deg): {np.round(np.degrees(prev), 1).tolist()}")
+        warned_nonfinite = False
+        last_cmd_t = None
         tracker = HandTracker(models_dir() / "hand_landmarker.task", want=args.hand,
                               mirrored_input=args.mirrored)
         twin = Twin()
@@ -141,13 +158,20 @@ def main(argv: list[str] | None = None) -> int:
             q, status = pipe.step(obs, t_frame)
             extra = None
             if follower is not None:
-                if args.mode == "paired":
-                    q_leader = leader.read()
+                dt = 1 / 60 if last_cmd_t is None else t_frame - last_cmd_t
+                last_cmd_t = t_frame
+                q_leader = leader.read() if leader is not None else None
+                if q_leader is not None:
                     extra = {"leader": q_leader, "camera_cmd": q}  # camera q: logged, not sent
-                    q = clamp_margin(q_leader)
-                else:
-                    q = clamp_margin(q)
-                follower.send(q)
+                q_new = select_command(args.mode, status, q, q_leader, prev, dt, max_speed)
+                try:
+                    follower.send(q_new)
+                    prev = q_new
+                except ValueError as e:  # non-finite command: hold this frame
+                    if not warned_nonfinite:
+                        print(f"WARNING: command rejected, holding ({e})")
+                        warned_nonfinite = True
+                q = prev
             latency_ms = (time.perf_counter() - t_frame) * 1000
             now = time.perf_counter()
             if last_t is not None and now > last_t:

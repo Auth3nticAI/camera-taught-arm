@@ -15,6 +15,25 @@ def clamp_margin(q: np.ndarray, margin_rad: float = 0.087) -> np.ndarray:
     return np.clip(q, SIM_LIMITS[:, 0] + margin_rad, SIM_LIMITS[:, 1] - margin_rad)
 
 
+def limit_speed(prev: np.ndarray, target: np.ndarray, dt: float, max_speed_rad_s: float) -> np.ndarray:
+    """Per-joint |delta| <= max_speed * dt (dt clamped to [0, 0.1])."""
+    dt = float(np.clip(dt, 0.0, 0.1))
+    prev = np.asarray(prev, dtype=float)
+    step = max_speed_rad_s * dt
+    return prev + np.clip(np.asarray(target, dtype=float) - prev, -step, step)
+
+
+def select_command(mode: str, status: str, pipeline_q: np.ndarray, leader_q: np.ndarray | None,
+                   prev: np.ndarray, dt: float, max_speed_rad_s: float) -> np.ndarray:
+    """Per-frame safe command. mirror: follow pipeline only while TRACKING, else hold prev.
+    paired: follow the leader only (pipeline q is never sent)."""
+    if mode == "paired":
+        desired = prev if leader_q is None else leader_q
+    else:
+        desired = pipeline_q if status == "TRACKING" else prev
+    return limit_speed(prev, clamp_margin(desired), dt, max_speed_rad_s)
+
+
 def offset_from_reference(real_deg: float, sim_rad: float, sign: float) -> float:
     """offset_deg such that sign*degrees(sim_rad) + offset == real_deg."""
     return float(real_deg - sign * np.degrees(sim_rad))
@@ -22,7 +41,7 @@ def offset_from_reference(real_deg: float, sim_rad: float, sign: float) -> float
 
 class ArmIO(Protocol):
     def connect(self) -> None: ...
-    def send(self, q: np.ndarray) -> None: ...
+    def send(self, q: np.ndarray) -> object: ...
     def read(self) -> np.ndarray | None: ...
     def close(self) -> None: ...
 
@@ -64,7 +83,14 @@ class _LeRobotArm:
     def connect(self) -> None:
         if self._dev is None:
             self._dev = self._make()
-        self._dev.connect(calibrate=False)
+        try:
+            self._dev.connect(calibrate=False)
+        except Exception:
+            try:
+                self._dev.disconnect()  # release a half-open bus / torque
+            except Exception:
+                pass
+            raise
         self._connected = True
         if not self._dev.is_calibrated:
             self.close()
@@ -85,8 +111,15 @@ class FollowerArm(_LeRobotArm):
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
         return SO101Follower(SO101FollowerConfig(port=self.port, id="cta_follower", max_relative_target=10.0))
 
-    def send(self, q: np.ndarray) -> None:
-        self._dev.send_action(sim_to_real(q, self.map))
+    def send(self, q: np.ndarray) -> dict[str, float]:
+        q = np.asarray(q, dtype=float)
+        if q.shape != (6,) or not np.all(np.isfinite(q)):
+            raise ValueError(f"refusing to send non-finite / mis-shaped command: {q}")
+        action = sim_to_real(q, self.map)
+        if not all(np.isfinite(v) for v in action.values()):
+            raise ValueError(f"refusing to send non-finite action: {action}")
+        self._dev.send_action(action)
+        return action
 
     def read(self) -> np.ndarray | None:
         return real_to_sim(_joint_obs(self._dev.get_observation()), self.map)
