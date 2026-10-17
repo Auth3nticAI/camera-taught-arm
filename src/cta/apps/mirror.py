@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             heavy = n % 2 == 0  # twin render + images at most every 2nd frame
             twin_rgb = twin.render(q) if heavy else None
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
-                           fps_ema, lat_ema, status, loop_ema, extra_deg=extra)
+                           fps_ema, lat_ema, status, loop_ema, extra_rad=extra)
             loop_ms = (time.perf_counter() - t_frame) * 1000  # frame read -> end of iteration
             loop_ema = loop_ms if loop_ema == 0.0 else 0.9 * loop_ema + 0.1 * loop_ms
             if args.max_frames and n >= args.max_frames:
