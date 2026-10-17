@@ -111,15 +111,15 @@ class FollowerArm(_LeRobotArm):
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
         return SO101Follower(SO101FollowerConfig(port=self.port, id="cta_follower", max_relative_target=10.0))
 
-    def send(self, q: np.ndarray) -> dict[str, float]:
+    def send(self, q: np.ndarray) -> np.ndarray:
         q = np.asarray(q, dtype=float)
         if q.shape != (6,) or not np.all(np.isfinite(q)):
             raise ValueError(f"refusing to send non-finite / mis-shaped command: {q}")
         action = sim_to_real(q, self.map)
         if not all(np.isfinite(v) for v in action.values()):
             raise ValueError(f"refusing to send non-finite action: {action}")
-        self._dev.send_action(action)
-        return action
+        ret = self._dev.send_action(action)  # LeRobot returns the action after max_relative_target clipping
+        return real_to_sim(_joint_obs(ret if ret is not None else action), self.map)
 
     def read(self) -> np.ndarray | None:
         return real_to_sim(_joint_obs(self._dev.get_observation()), self.map)

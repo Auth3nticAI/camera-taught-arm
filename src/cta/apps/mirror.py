@@ -107,8 +107,10 @@ def main(argv: list[str] | None = None) -> int:
         pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
         prev = None
         if follower is not None:
-            prev = clamp_margin(follower.read())  # actual pose: start from reality, never from READY_Q
-            pipe.reset_to(prev)
+            prev = np.asarray(follower.read(), dtype=float)  # raw pose, unclamped: ramp into the margin
+            if prev.shape != (6,) or not np.all(np.isfinite(prev)):
+                raise RuntimeError(f"follower pose is not finite ({prev}); check calibration / sim_real_map")
+            pipe.reset_to(clamp_margin(prev))
             print(f"follower pose (deg): {np.round(np.degrees(prev), 1).tolist()}")
         warned_nonfinite = False
         last_cmd_t = None
@@ -165,8 +167,10 @@ def main(argv: list[str] | None = None) -> int:
                     extra = {"leader": q_leader, "camera_cmd": q}  # camera q: logged, not sent
                 q_new = select_command(args.mode, status, q, q_leader, prev, dt, max_speed)
                 try:
-                    follower.send(q_new)
+                    sent = follower.send(q_new)
                     prev = q_new
+                    if sent is not None:
+                        extra = {**(extra or {}), "sent": sent}
                 except ValueError as e:  # non-finite command: hold this frame
                     if not warned_nonfinite:
                         print(f"WARNING: command rejected, holding ({e})")

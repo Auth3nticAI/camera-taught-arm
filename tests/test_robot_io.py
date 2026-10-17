@@ -139,7 +139,7 @@ def test_follower_send_rejects_nonfinite_and_sends_nothing():
     with pytest.raises(ValueError):
         arm.send(bad)
     assert dev.sent is None
-    assert isinstance(arm.send(READY_Q), dict)
+    assert np.allclose(arm.send(READY_Q), READY_Q)
 
 
 def test_simrealmap_validation(tmp_path):
@@ -193,3 +193,14 @@ def test_pipeline_reset_to():
     p = MirrorPipeline(kin, None, MapGains.from_kinematics(kin), None)
     p.reset_to(REST)
     assert np.allclose(p.q_cmd, REST)
+
+
+def test_send_returns_clipped_action_as_rad():
+    class Clip(_Cal):
+        def send_action(self, a):
+            return {k: v * 0.5 for k, v in a.items()}
+
+    arm = FollowerArm("COM3", device=Clip())
+    arm.connect()
+    out = arm.send(READY_Q)
+    assert np.allclose(out[:5], READY_Q[:5] * 0.5)

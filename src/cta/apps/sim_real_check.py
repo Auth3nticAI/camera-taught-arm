@@ -59,14 +59,22 @@ def _prompt(map_: SimRealMap, shared: _Shared) -> None:
                 if c == "f":
                     map_.sign[i] *= -1
                 elif c == "o":
-                    map_.offset_deg[i] = float(parts[2])
+                    v = float(parts[2])
+                    if not np.isfinite(v):
+                        print("offset must be finite")
+                        continue
+                    map_.offset_deg[i] = v
                 elif c == "z":
                     with shared.lock:
                         raw = None if shared.raw is None else shared.raw[f"{JOINTS[i]}.pos"]
                     if raw is None:
                         print("no leader reading yet")
                         continue
-                    map_.offset_deg[i] = offset_from_reference(raw, float(parts[2]), map_.sign[i])
+                    off = offset_from_reference(raw, float(parts[2]), map_.sign[i])
+                    if not np.isfinite(off):
+                        print("offset must be finite")
+                        continue
+                    map_.offset_deg[i] = off
                 else:
                     print("unknown command")
                     continue
