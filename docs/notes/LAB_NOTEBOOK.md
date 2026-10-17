@@ -14,3 +14,23 @@ Dated entries: what was tried, what broke, what was learned, numbers, and screen
 - Ordered the SO-ARM101 Pro (leader + follower) and the innomaker camera. Arriving 10/17.
 - Human-facing camera = an AI PTZ 4K webcam. **Lesson:** "smart" camera features (auto-tracking, gesture control, auto-zoom, auto-focus) break a vision system that assumes a fixed camera. Turn them off and lock it to 1080p@60.
 - Wrote the design doc: `docs/specs/2026-10-16-camera-taught-arm-design.md`.
+
+## 2026-10-17 · Plan 1 built (teach layer, no arm yet)
+- Built 9 tasks with an implementer and an independent reviewer per task, then a final whole-branch review. Result: **81 automated tests passing**. Branch `plan1/teach-layer` on GitHub.
+- **No-hardware smoke run:** camera 1920×1080 @ **59.4 fps** (MJPG); app loop **~60 fps**; camera→command latency **11.7 ms**; full loop 14.7 ms. Both are well inside the gates (≥ 20 FPS, < 150 ms). Recording on: 53 fps.
+- **Bug worth a slide (camera at 5 fps):** OpenCV on Windows (DirectShow) ignored the MJPG compression setting because it was set *before* resolution and fps. The camera fell back to uncompressed YUY2, which only manages 5 fps at 1080p over USB 2. Setting MJPG **last** gave 59.4 fps. A reviewer found it by testing every setting order on the real camera. The app now reads the format back and warns if it isn't MJPG.
+- **Safety bug caught in review (before the arm arrived):** the first version would have sent the arm toward a preset "ready" pose on startup, at about 300–580°/s, wherever it was resting. Fixes:
+  - start from the arm's *measured* pose;
+  - cap joint speed (90°/s by default, `--max-speed-dps`);
+  - send mirror commands only while a hand is tracked;
+  - refuse non-finite values at two layers.
+  Regression tests prove the first command stays within one speed step of the real pose, including when the arm rests near a joint limit.
+- **Recording hardening (final review):**
+  - a single dropped serial packet no longer ends a take (hold, record NaN; exit after 15 failures in a row);
+  - Windows file locks can't crash autosave;
+  - hotkeys only work when the terminal has focus;
+  - the app refuses to drive the arm without a sim↔real alignment file;
+  - each recorded frame stores tracking status and smoother on/off, so Plan 2 can mask frames.
+- **Workspace box:** x 0.222–0.443 m, y −0.335–0.332 m, z 0.02–0.25 m (base frame). It's derived from reachable poses at table height; the first version had only 5 cm of forward reach.
+- **Ready pose:** joints [0, −0.6, 0.9, 0, 0, 0.6] rad puts the gripper at (0.315, −0.001, 0.155) m.
+- **Course-text tie-in:** this layer is classical (geometry + IK). It is the *teacher* and baseline that the Plan 2 networks (ch. 6 MLP, ch. 4.4 time windows) must beat.
