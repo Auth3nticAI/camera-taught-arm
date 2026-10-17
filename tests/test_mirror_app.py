@@ -224,3 +224,12 @@ def test_console_keys_poll_swallows_special_prefix():
     k = mirror._ConsoleKeys(ev, kbhit=lambda: bool(queue), getwch=lambda: queue.pop(0))
     k.poll()
     assert ev == {"s", "c"} and not queue
+
+
+def test_sync_data_help_lists_config():
+    import subprocess
+    import sys
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[1] / "scripts" / "sync_data.py"
+    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0 and "config" in out.stdout
