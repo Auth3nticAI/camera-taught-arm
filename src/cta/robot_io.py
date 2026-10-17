@@ -97,6 +97,9 @@ class _LeRobotArm:
             raise RuntimeError(
                 f"{self._what} is not calibrated. Run:\n  {self._cal_cmd.format(port=self.port)}")
 
+    def calibration_info(self) -> dict:
+        return {"id": getattr(self._dev, "id", None), "path": str(getattr(self._dev, "calibration_fpath", None))}
+
     def close(self) -> None:
         if self._dev is not None and self._connected:
             self._connected = False

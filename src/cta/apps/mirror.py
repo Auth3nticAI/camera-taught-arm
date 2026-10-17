@@ -17,14 +17,66 @@ from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
 from cta.pipeline import MirrorPipeline
-from cta.recorder import SessionRecorder, git_commit, next_take_name
+from cta.recorder import STATUS_CODES, STATUS_UNKNOWN, SessionRecorder, git_commit, next_take_name
 from cta.robot_io import FollowerArm, LeaderArm, clamp_margin, select_command
 from cta.twin import Twin
 from cta.units import SimRealMap
 
 
+KEY_CHARS = "csrq"
+MAX_CONSEC_BUS_FAILS = 15
+WARN_EVERY_S = 1.0
+
+
+def dispatch_keys(chars, events: set[str]) -> None:
+    """Map typed characters to app events (pure; unit-tested without a keyboard)."""
+    for ch in chars:
+        if ch and ch.lower() in KEY_CHARS:
+            events.add(ch.lower())
+
+
+class _ConsoleKeys:
+    """Windows console keys via msvcrt: polled once per loop, only active while this terminal has focus."""
+
+    def __init__(self, events: set[str], kbhit=None, getwch=None):
+        import msvcrt
+        self._events = events
+        self._kbhit = kbhit or msvcrt.kbhit
+        self._getwch = getwch or msvcrt.getwch
+
+    def poll(self) -> None:
+        chars = []
+        while self._kbhit():
+            ch = self._getwch()
+            if ch in ("\x00", "\xe0"):  # function/arrow key prefix: swallow the second code
+                self._getwch()
+                continue
+            chars.append(ch)
+        dispatch_keys(chars, self._events)
+
+    def stop(self) -> None:
+        pass
+
+
+class _PynputKeys:
+    # NOTE: pynput listens globally (non-Windows fallback): keys are captured even when another window has focus.
+    def __init__(self, listener):
+        self._lis = listener
+
+    def poll(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        self._lis.stop()
+
+
 def _start_keys(events: set[str]):
-    # NOTE: pynput listens globally - keys are captured even when another window has focus.
+    if sys.platform == "win32":
+        try:
+            return _ConsoleKeys(events)
+        except Exception as e:
+            print(f"console keys unavailable ({e}); c/s/r/q keys disabled")
+            return None
     try:
         from pynput import keyboard
     except Exception as e:  # headless / no backend
@@ -32,13 +84,11 @@ def _start_keys(events: set[str]):
         return None
 
     def on_press(key):
-        ch = getattr(key, "char", None)
-        if ch and ch.lower() in "csrq":
-            events.add(ch.lower())
+        dispatch_keys([getattr(key, "char", None)], events)
 
     lis = keyboard.Listener(on_press=on_press)
     lis.start()
-    return lis
+    return _PynputKeys(lis)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--record", default=None, metavar="NAME",
                     help="enable recording; 'r' key starts/stops a take saved as sessions/NAME_NN")
     ap.add_argument("--autostart-record", action="store_true", help="start the first take immediately (smoke runs)")
+    ap.add_argument("--allow-identity-map", action="store_true",
+                    help="--robot so101: run without sim_real_map.json (identity sign/offset; unsafe unless verified)")
     ap.add_argument("--max-frames", type=int, default=0, help="exit after N frames (smoke run)")
     args = ap.parse_args(argv)
 
@@ -69,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--max-speed-dps must be > 0")
         if args.mode == "paired" and not args.leader_port:
             ap.error("--mode paired requires --leader-port")
+
+    map_path = data_dir() / "sim_real_map.json"
+    if args.robot == "so101" and not map_path.exists():
+        if not args.allow_identity_map:
+            ap.error(f"{map_path} is missing; the sim<->real joint map would silently be identity. "
+                     "Run `uv run python -m cta.apps.sim_real_check` (or sync_data.py pull --what config), "
+                     "or pass --allow-identity-map to override.")
+        print("!! WARNING: running with an IDENTITY sim_real_map (--allow-identity-map)")
 
     if args.robot == "none" and args.mode == "paired":
         ap.error("--mode paired requires --robot so101")
@@ -129,20 +189,30 @@ def main(argv: list[str] | None = None) -> int:
         dash = Dashboard()
         events: set[str] = set()
         keys = _start_keys(events)
-        print("keys: c = calibrate (hand at home), s = toggle smoother, "
+        print("keys (click this terminal first): c = calibrate (hand at home), s = toggle smoother, "
               + ("r = start/stop take, " if args.record else "") + "q = quit")
         sessions_root = data_dir() / "sessions"
 
-        def start_take() -> SessionRecorder:
+        def start_take() -> SessionRecorder | None:
+            if pipe.cal is None:
+                if args.mode == "mirror":
+                    print("REFUSED: cannot record a free-hand take while uncalibrated "
+                          "(commands would be a constant pose). Press c with the hand at home first.")
+                    return None
+                print("!! WARNING: recording a paired take while UNCALIBRATED: leader labels are valid, "
+                      "but pipeline commands are constant; use the per-row 'status' column to mask.")
             name = next_take_name(sessions_root, args.record)
+            sim_map = SimRealMap.load()
             meta = {
                 "mode": "paired" if args.mode == "paired" else "free",
                 "robot": args.robot, "camera_mode": dataclasses.asdict(mode),
                 "calibration": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in vars(pipe.cal).items()}
                 if pipe.cal is not None else None,
                 "gains": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in vars(gains).items()},
-                "sim_real_map": {"sign": SimRealMap.load().sign.tolist(),
-                                 "offset_deg": SimRealMap.load().offset_deg.tolist()},
+                "sim_real_map": {"sign": sim_map.sign.tolist(), "offset_deg": sim_map.offset_deg.tolist()},
+                "lerobot_calibration": {
+                    "follower": getattr(follower, "calibration_info", lambda: None)(),
+                    "leader": getattr(leader, "calibration_info", lambda: None)()},
                 "git_commit": git_commit(), "hand": args.hand, "mirrored": args.mirrored,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
@@ -159,10 +229,14 @@ def main(argv: list[str] | None = None) -> int:
                 r.close()
             finally:
                 print(f"REC STOP: {r.n} frames saved to {r.dir}")
-                print("push the data: uv run python scripts/sync_data.py push --what sessions")
+                print("reminder: run `uv run python scripts/sync_data.py pull` before recording on another machine; "
+                      "push (`... push --what sessions`) only BETWEEN takes, never mid-take.")
 
         if args.autostart_record:
             rec = start_take()
+            if rec is None:
+                print("ERROR: --autostart-record refused (see above)")
+                return 1
 
         fps_ema = 0.0
         lat_ema = 0.0
@@ -171,8 +245,12 @@ def main(argv: list[str] | None = None) -> int:
         last_ok = time.perf_counter()
         rc = 0
         n = 0
+        consec_fail = 0
+        last_warn = -1e9
         while True:
             rgb, t_frame = cam.read()
+            if keys is not None:
+                keys.poll()
             if "q" in events:
                 break
             if rgb is None:
@@ -210,27 +288,55 @@ def main(argv: list[str] | None = None) -> int:
             q, status = pipe.step(obs, t_frame)
             q_baseline = q.copy()
             q_leader = None
+            q_foll = None
             extra = None
+            bus_err: Exception | None = None
             if follower is not None:
                 dt = 1 / 60 if last_cmd_t is None else t_frame - last_cmd_t
                 last_cmd_t = t_frame
-                q_leader = leader.read() if leader is not None else None
+                skip_send = False
+                if leader is not None:
+                    try:
+                        q_leader = leader.read()
+                    except Exception as e:  # one serial hiccup must not end the take
+                        bus_err, skip_send = e, True
                 if q_leader is not None:
                     extra = {"leader": q_leader, "camera_cmd": q}  # camera q: logged, not sent
-                q_new = select_command(args.mode, status, q, q_leader, prev, dt, max_speed)
-                try:
-                    sent = follower.send(q_new)
-                    prev = q_new
-                    if sent is not None:
-                        extra = {**(extra or {}), "sent": sent}
-                except ValueError as e:  # non-finite command: hold this frame
-                    if not warned_nonfinite:
-                        print(f"WARNING: command rejected, holding ({e})")
-                        warned_nonfinite = True
+                if not skip_send:
+                    q_new = select_command(args.mode, status, q, q_leader, prev, dt, max_speed)
+                    try:
+                        sent = follower.send(q_new)
+                        prev = q_new
+                        if sent is not None:
+                            extra = {**(extra or {}), "sent": sent}
+                    except ValueError as e:  # non-finite command: hold this frame
+                        if not warned_nonfinite:
+                            print(f"WARNING: command rejected, holding ({e})")
+                            warned_nonfinite = True
+                    except Exception as e:  # bus error: hold prev, send nothing new
+                        bus_err = e
                 q = prev
             if rec is not None:
-                q_foll = follower.read() if follower is not None else None
-                rec.add(t_frame, obs, pipe.last_features, q_baseline, q_leader, q_foll, rgb)
+                if follower is not None:
+                    try:
+                        q_foll = follower.read()
+                    except Exception as e:
+                        bus_err = bus_err or e
+                rec.add(t_frame, obs, pipe.last_features, q_baseline, q_leader, q_foll, rgb,
+                        status=STATUS_CODES.get(status, STATUS_UNKNOWN),
+                        smoother_on=int(pipe.smoother is not None))
+            if bus_err is None:
+                consec_fail = 0
+            else:
+                consec_fail += 1
+                now_w = time.perf_counter()
+                if now_w - last_warn >= WARN_EVERY_S:
+                    last_warn = now_w
+                    print(f"WARNING: arm bus error, holding ({consec_fail} in a row): {bus_err!r}")
+                if consec_fail >= MAX_CONSEC_BUS_FAILS:
+                    print(f"ERROR: {consec_fail} consecutive arm bus errors; exiting (arms will be closed)")
+                    rc = 1
+                    break
             latency_ms = (time.perf_counter() - t_frame) * 1000
             now = time.perf_counter()
             if last_t is not None and now > last_t:
