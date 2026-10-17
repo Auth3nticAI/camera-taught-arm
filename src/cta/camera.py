@@ -1,4 +1,4 @@
-﻿"""Webcam capture with a startup mode check (never uses HighGUI windows)."""
+"""Webcam capture with a startup mode check (never uses HighGUI windows)."""
 from __future__ import annotations
 
 import argparse
@@ -38,6 +38,7 @@ class Camera:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, wanted.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, wanted.height)
         self.cap.set(cv2.CAP_PROP_FPS, wanted.fps)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # minimize capture latency
 
     def is_open(self) -> bool:
         return bool(self.cap.isOpened())
@@ -52,6 +53,8 @@ class Camera:
 
     def measure_mode(self, n: int = 60) -> CameraMode:
         """Measure real size and fps from n reads (CAP_PROP_FPS is not trusted)."""
+        for _ in range(10):  # discard warm-up frames before timing
+            self.read()
         times: list[float] = []
         w = h = 0
         for _ in range(n):

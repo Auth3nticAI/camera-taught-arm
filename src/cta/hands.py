@@ -71,3 +71,6 @@ class HandTracker:
             side=self.want,
             score=float(scores[i]),
         )
+
+    def close(self) -> None:
+        self._lm.close()
