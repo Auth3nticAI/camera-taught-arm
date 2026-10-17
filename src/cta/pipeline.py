@@ -50,6 +50,7 @@ class MirrorPipeline:
         q = self.kin.ik(pos, pitch, self.q_cmd, roll, grip)
         if self.smoother is not None:
             q = np.asarray(self.smoother(q, t), dtype=float)
+        # note: smoother state tracks the unclamped target, not the rate-limited q_cmd
         q = self.q_cmd + np.clip(q - self.q_cmd, -self.max_step_rad, self.max_step_rad)
         q = np.clip(q, SIM_LIMITS[:, 0], SIM_LIMITS[:, 1])
         self.q_cmd = q

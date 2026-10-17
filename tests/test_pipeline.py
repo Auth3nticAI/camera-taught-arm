@@ -48,8 +48,7 @@ def test_step_rate_limits_joint_jumps(kin, gains):
     prev, _ = p.step(obs(), 0.0)
     q, status = p.step(obs(wrist_uv=(1.0, 0.5)), 0.01)  # u += 0.5
     assert status == "TRACKING"
-    assert np.max(np.abs(q - prev)) <= 0.15 + 1e-9
-    assert np.max(np.abs(q - prev)) > 0.0
+    assert np.max(np.abs(q - prev)) == pytest.approx(0.15)  # clamping kicked in
 
 
 def test_step_outputs_within_limits(kin, gains):
@@ -62,3 +61,13 @@ def test_step_outputs_within_limits(kin, gains):
         q, _ = p.step(o, i * 0.03)
         assert q.shape == (6,) and np.all(np.isfinite(q))
         assert np.all(q >= SIM_LIMITS[:, 0] - 1e-9) and np.all(q <= SIM_LIMITS[:, 1] + 1e-9)
+
+
+def test_step_nonfinite_target_holds(kin, gains):
+    p = MirrorPipeline(kin, None, gains, None)
+    p.calibrate(obs())
+    q1, _ = p.step(obs(wrist_uv=(0.4, 0.5)), 0.0)
+    bad = obs()
+    bad.lm_img[:] = np.nan
+    q2, status = p.step(bad, 0.01)
+    assert status == "NO HAND" and np.array_equal(q1, q2)

@@ -14,6 +14,7 @@ class CameraMode:
     width: int
     height: int
     fps: float
+    fourcc: str = ""
 
 
 def camera_check(actual: CameraMode, wanted: CameraMode = CameraMode(1920, 1080, 60)) -> list[str]:
@@ -28,16 +29,21 @@ def camera_check(actual: CameraMode, wanted: CameraMode = CameraMode(1920, 1080,
         warnings.append(
             f"camera fps {actual.fps:.1f}, wanted >= {0.85 * wanted.fps:.1f} (of {wanted.fps:g})"
         )
+    if actual.fourcc and actual.fourcc != "MJPG":
+        warnings.append(
+            f"camera pixel format {actual.fourcc}, wanted MJPG (raw formats cap fps at 1080p)"
+        )
     return warnings
 
 
 class Camera:
     def __init__(self, index: int, wanted: CameraMode):
         self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        # DSHOW order matters: size, fps, then FOURCC last (earlier FOURCC is ignored/reset).
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, wanted.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, wanted.height)
         self.cap.set(cv2.CAP_PROP_FPS, wanted.fps)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # minimize capture latency
 
     def is_open(self) -> bool:
@@ -50,6 +56,10 @@ class Camera:
         if not ok or bgr is None:
             return None, t
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), t
+
+    def _fourcc(self) -> str:
+        v = int(self.cap.get(cv2.CAP_PROP_FOURCC))
+        return "".join(chr((v >> (8 * i)) & 0xFF) for i in range(4)).strip("\x00 ")
 
     def measure_mode(self, n: int = 60) -> CameraMode:
         """Measure real size and fps from n reads (CAP_PROP_FPS is not trusted)."""
@@ -64,8 +74,8 @@ class Camera:
             h, w = frame.shape[:2]
             times.append(t)
         if len(times) < 2 or times[-1] <= times[0]:
-            return CameraMode(w, h, 0.0)
-        return CameraMode(w, h, (len(times) - 1) / (times[-1] - times[0]))
+            return CameraMode(w, h, 0.0, self._fourcc())
+        return CameraMode(w, h, (len(times) - 1) / (times[-1] - times[0]), self._fourcc())
 
     def close(self) -> None:
         self.cap.release()

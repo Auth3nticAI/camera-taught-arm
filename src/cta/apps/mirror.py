@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 
 from cta.camera import Camera, CameraMode, camera_check
 from cta.dashboard import Dashboard
@@ -17,6 +18,7 @@ from cta.twin import Twin
 
 
 def _start_keys(events: set[str]):
+    # NOTE: pynput listens globally - keys are captured even when another window has focus.
     try:
         from pynput import keyboard
     except Exception as e:  # headless / no backend
@@ -47,7 +49,6 @@ def main(argv: list[str] | None = None) -> int:
         print("SO-101 support arrives in Task 8")
         return 2
 
-    from pathlib import Path
     calib_path = Path(args.calib) if args.calib else data_dir() / "calibration.json"
     cal = None
     if calib_path.exists():
@@ -58,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     cam = Camera(args.camera, wanted)
     tracker = twin = None
     keys = None
+    rc = 0
     try:
         if not cam.is_open():
             print(f"ERROR: camera {args.camera} did not open")
@@ -87,12 +89,23 @@ def main(argv: list[str] | None = None) -> int:
 
         fps_ema = 0.0
         lat_ema = 0.0
+        loop_ema = 0.0
         last_t = None
+        last_ok = time.perf_counter()
+        rc = 0
         n = 0
         while True:
             rgb, t_frame = cam.read()
+            if "q" in events:
+                break
             if rgb is None:
+                if time.perf_counter() - last_ok > 2.0:
+                    print("ERROR: no camera frames for 2 s; exiting")
+                    rc = 1
+                    break
+                time.sleep(0.005)
                 continue
+            last_ok = time.perf_counter()
             obs = tracker.detect(rgb, t_frame)
             if "c" in events:
                 events.discard("c")
@@ -109,21 +122,23 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     pipe.set_smoother(None)
                 print(f"smoother {'ON' if pipe.smoother else 'OFF'}")
-            if "q" in events:
-                break
             q, status = pipe.step(obs, t_frame)
             latency_ms = (time.perf_counter() - t_frame) * 1000
-            twin_rgb = twin.render(q)
             now = time.perf_counter()
             if last_t is not None and now > last_t:
                 inst = 1.0 / (now - last_t)
                 fps_ema = inst if fps_ema == 0.0 else 0.9 * fps_ema + 0.1 * inst
             lat_ema = latency_ms if lat_ema == 0.0 else 0.9 * lat_ema + 0.1 * latency_ms
             last_t = now
-            dash.log_frame(rgb, obs, twin_rgb, q, fps_ema, lat_ema, status)
             n += 1
+            heavy = n % 2 == 0  # twin render + images at most every 2nd frame
+            twin_rgb = twin.render(q) if heavy else None
+            dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
+                           fps_ema, lat_ema, status, loop_ema)
+            loop_ms = (time.perf_counter() - t_frame) * 1000  # frame read -> end of iteration
+            loop_ema = loop_ms if loop_ema == 0.0 else 0.9 * loop_ema + 0.1 * loop_ms
             if args.max_frames and n >= args.max_frames:
-                print(f"done {n} frames: fps(EMA) {fps_ema:.1f}, latency(EMA) {lat_ema:.1f} ms, status {status}")
+                print(f"done {n} frames: fps(EMA) {fps_ema:.1f}, latency(EMA) {lat_ema:.1f} ms, loop(EMA) {loop_ema:.1f} ms, status {status}")
                 break
     except KeyboardInterrupt:
         pass
@@ -135,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             tracker.close()
         if twin is not None:
             twin.close()
-    return 0
+    return rc
 
 
 if __name__ == "__main__":
