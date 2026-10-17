@@ -39,19 +39,55 @@ class MapGains:
 
     @classmethod
     def from_kinematics(cls, kin: Kinematics, n: int = 2000, seed: int = 0) -> "MapGains":
-        """Workspace box from FK of joint samples (limits shrunk 10%), 5th/95th percentiles."""
+        """Workspace box from a reach analysis of the working band.
+
+        FK of joint samples (limits shrunk 10%) is kept where 0.02<=z<=0.25 and x>=0.10;
+        per-axis 2nd/98th percentiles give the box, z is fixed to [0.02, 0.25], x/y are
+        shrunk 1 cm per side, then each x/y face is pulled in by 1 cm steps until IK
+        reaches the face center (z=0.10) within 1 cm.
+        """
         rng = np.random.default_rng(seed)
         lo, hi = SIM_LIMITS[:, 0], SIM_LIMITS[:, 1]
         mid, half = (lo + hi) / 2, (hi - lo) / 2 * 0.9
         qs = mid + rng.uniform(-1, 1, (n, 6)) * half
         pts = np.array([kin.fk(q)[0] for q in qs])
-        bmin = np.percentile(pts, 5, axis=0)
-        bmax = np.percentile(pts, 95, axis=0)
-        bmin[2] = max(bmin[2], 0.02)  # keep gripper above the table
+        pts = pts[(pts[:, 2] >= 0.02) & (pts[:, 2] <= 0.25) & (pts[:, 0] >= 0.10)]
+        bmin = np.percentile(pts, 2, axis=0)
+        bmax = np.percentile(pts, 98, axis=0)
+        bmin[2], bmax[2] = 0.02, 0.25
+        bmin[:2] += 0.01
+        bmax[:2] -= 0.01
+        _, pitch_home = kin.fk(READY_Q)
+
+        def reaches(p) -> bool:
+            q = kin.ik(np.asarray(p), pitch_home, READY_Q, 0.0, READY_Q[5])
+            return bool(np.linalg.norm(kin.fk(q)[0] - p) <= 0.01)
+
+        def faces():
+            m = (bmin + bmax) / 2
+            return {
+                (0, 1): [bmax[0], 0.0, 0.10], (0, 0): [bmin[0], 0.0, 0.10],
+                (1, 1): [m[0], bmax[1], 0.10], (1, 0): [m[0], bmin[1], 0.10],
+            }
+
+        for _ in range(100):
+            bad = [k for k, p in faces().items() if not reaches(p)]
+            if not bad:
+                break
+            for ax, upper in bad:
+                (bmax if upper else bmin)[ax] += -0.01 if upper else 0.01
         return cls(box_min=bmin, box_max=bmax)
 
 
+def _check(s0: float, closed: float, open_: float) -> None:
+    if abs(s0) < 1e-9:
+        raise ValueError("calibration scale s0 must be non-zero (hand not detected?)")
+    if abs(open_ - closed) < 1e-9:
+        raise ValueError("pinch_open and pinch_closed must differ")
+
+
 def calibrate(f: HandFeatures, kin: Kinematics) -> Calibration:
+    _check(f.scale, 0.25, 0.9)
     p0, pitch_home = kin.fk(READY_Q)
     return Calibration(
         u0=f.u, v0=f.v, s0=f.scale, pitch0=f.pitch, roll0=f.roll,
@@ -81,4 +117,6 @@ def save_calibration(cal: Calibration, path) -> None:
 def load_calibration(path) -> Calibration:
     d = json.loads(Path(path).read_text())
     d["p0"] = np.array(d["p0"], dtype=float)
-    return Calibration(**d)
+    cal = Calibration(**d)
+    _check(cal.s0, cal.pinch_closed, cal.pinch_open)
+    return cal

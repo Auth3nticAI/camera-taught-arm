@@ -1,8 +1,9 @@
 import dataclasses
 
 import numpy as np
+import pytest
 
-from cta.config import SIM_LIMITS
+from cta.config import READY_Q, SIM_LIMITS
 from cta.features import HandFeatures
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains, calibrate, load_calibration, map_to_target, save_calibration
@@ -11,8 +12,11 @@ KIN = Kinematics()
 HOME = HandFeatures(u=0.5, v=0.5, scale=0.2, pitch=0.1, roll=0.2, pinch=0.6)
 
 
+_GAINS = MapGains.from_kinematics(KIN)
+
+
 def _setup():
-    return calibrate(HOME, KIN), MapGains.from_kinematics(KIN)
+    return calibrate(HOME, KIN), _GAINS
 
 
 def test_home_features_map_to_p0():
@@ -37,9 +41,38 @@ def test_user_left_moves_robot_plus_y():
 def test_hand_closer_moves_robot_forward():
     cal, g = _setup()
     base, *_ = map_to_target(HOME, cal, g)
-    pos, *_ = map_to_target(dataclasses.replace(HOME, scale=HOME.scale * 1.1), cal, g)
+    pos, *_ = map_to_target(dataclasses.replace(HOME, scale=HOME.scale * 1.25), cal, g)
     assert pos[0] > base[0]
+
+
+def test_forward_gain_exact_value():
+    cal, g = _setup()
+    base, *_ = map_to_target(HOME, cal, g)
+    pos, *_ = map_to_target(dataclasses.replace(HOME, scale=HOME.scale * 1.1), cal, g)
     assert np.isclose(pos[0] - base[0], 0.25 * (1 - 1 / 1.1))
+
+
+def test_scale_saturates_x_at_box():
+    cal, g = _setup()
+    hi, *_ = map_to_target(dataclasses.replace(HOME, scale=HOME.scale * 1000), cal, g)
+    lo, *_ = map_to_target(dataclasses.replace(HOME, scale=HOME.scale * 0.01), cal, g)
+    assert hi[0] == g.box_max[0]
+    assert lo[0] == g.box_min[0]
+
+
+def test_box_faces_reachable_by_ik():
+    cal, g = _setup()
+    m = (g.box_min + g.box_max) / 2
+    for p in ([g.box_max[0], 0, 0.1], [g.box_min[0], 0, 0.1],
+              [m[0], g.box_min[1], 0.1], [m[0], g.box_max[1], 0.1]):
+        p = np.array(p)
+        q = KIN.ik(p, cal.pitch_home, READY_Q, 0.0, READY_Q[5])
+        assert np.linalg.norm(KIN.fk(q)[0] - p) <= 0.01
+
+
+def test_calibrate_rejects_zero_scale():
+    with pytest.raises(ValueError):
+        calibrate(dataclasses.replace(HOME, scale=0.0), KIN)
 
 
 def test_pinch_closed_gives_min_gripper():
