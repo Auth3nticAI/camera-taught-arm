@@ -14,6 +14,7 @@ from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
 from cta.pipeline import MirrorPipeline
+from cta.robot_io import FollowerArm, LeaderArm, clamp_margin
 from cta.twin import Twin
 
 
@@ -38,6 +39,10 @@ def _start_keys(events: set[str]):
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cta-mirror")
     ap.add_argument("--robot", choices=["none", "so101"], default="none")
+    ap.add_argument("--follower-port", default=None, help="follower serial port, e.g. COM3 (--robot so101)")
+    ap.add_argument("--leader-port", default=None, help="leader serial port (required for --mode paired)")
+    ap.add_argument("--mode", choices=["mirror", "paired"], default="mirror",
+                    help="mirror: camera drives the follower; paired: leader drives the follower, camera only logged")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--hand", choices=["right", "left"], default="right")
     ap.add_argument("--mirrored", action="store_true", help="camera image is already mirrored")
@@ -46,8 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.robot == "so101":
-        print("SO-101 support arrives in Task 8")
-        return 2
+        if not args.follower_port:
+            ap.error("--robot so101 requires --follower-port")
+        if args.mode == "paired" and not args.leader_port:
+            ap.error("--mode paired requires --leader-port")
 
     calib_path = Path(args.calib) if args.calib else data_dir() / "calibration.json"
     cal = None
@@ -58,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     wanted = CameraMode(1920, 1080, 60)
     cam = Camera(args.camera, wanted)
     tracker = twin = None
+    follower = leader = None
     keys = None
     rc = 0
     try:
@@ -73,6 +81,14 @@ def main(argv: list[str] | None = None) -> int:
             for w in warns:
                 print(f"!! CAMERA WARNING: {w}")
             print(bar)
+        if args.robot == "so101":
+            follower = FollowerArm(args.follower_port)
+            follower.connect()
+            print(f"follower connected on {args.follower_port} (mode: {args.mode})")
+            if args.mode == "paired":
+                leader = LeaderArm(args.leader_port)
+                leader.connect()
+                print(f"leader connected on {args.leader_port}")
         aspect = mode.width / mode.height if mode.height else 16 / 9
 
         kin = Kinematics()
@@ -123,6 +139,15 @@ def main(argv: list[str] | None = None) -> int:
                     pipe.set_smoother(None)
                 print(f"smoother {'ON' if pipe.smoother else 'OFF'}")
             q, status = pipe.step(obs, t_frame)
+            extra = None
+            if follower is not None:
+                if args.mode == "paired":
+                    q_leader = leader.read()
+                    extra = {"leader": q_leader, "camera_cmd": q}  # camera q: logged, not sent
+                    q = clamp_margin(q_leader)
+                else:
+                    q = clamp_margin(q)
+                follower.send(q)
             latency_ms = (time.perf_counter() - t_frame) * 1000
             now = time.perf_counter()
             if last_t is not None and now > last_t:
@@ -134,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             heavy = n % 2 == 0  # twin render + images at most every 2nd frame
             twin_rgb = twin.render(q) if heavy else None
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
-                           fps_ema, lat_ema, status, loop_ema)
+                           fps_ema, lat_ema, status, loop_ema, extra_deg=extra)
             loop_ms = (time.perf_counter() - t_frame) * 1000  # frame read -> end of iteration
             loop_ema = loop_ms if loop_ema == 0.0 else 0.9 * loop_ema + 0.1 * loop_ms
             if args.max_frames and n >= args.max_frames:
@@ -143,6 +168,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        for arm in (follower, leader):  # disconnect disables torque; never skip the rest
+            if arm is not None:
+                try:
+                    arm.close()
+                except Exception as e:
+                    print(f"WARNING: arm disconnect failed: {e}")
         if keys is not None:
             keys.stop()
         cam.close()
