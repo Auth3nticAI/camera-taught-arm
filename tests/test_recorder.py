@@ -124,3 +124,16 @@ def test_load_session_missing_and_list_sessions(tmp_path):
     with SessionRecorder(tmp_path, "good_01", {}, video_size=SIZE) as r:
         _add(r)
     assert [p.name for p in list_sessions(tmp_path, "*_01")] == ["good_01"]
+
+
+def test_pose_rows_roundtrip_and_nan_when_absent(tmp_path):
+    img, world = np.full((33, 3), 0.25), np.full((33, 3), -0.5)
+    with SessionRecorder(tmp_path, "s", {"control": "arm"}, video_size=SIZE) as r:
+        r.add(0.0, _obs(), _feats(), np.zeros(6), None, None, _rgb(), pose_img=img, pose_world=world)
+        _add(r)  # old call signature: no pose
+    d = load_session(tmp_path / "s")
+    assert d["pose_img"].shape == (2, 33, 3) and d["pose_world"].shape == (2, 33, 3)
+    assert np.allclose(d["pose_img"][0], 0.25) and np.allclose(d["pose_world"][0], -0.5)
+    assert np.isnan(d["pose_img"][1]).all() and np.isnan(d["pose_world"][1]).all()
+    import json
+    assert json.loads((tmp_path / "s" / "meta.json").read_text())["control"] == "arm"
