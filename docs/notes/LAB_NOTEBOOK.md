@@ -49,3 +49,14 @@ Dated entries: what was tried, what broke, what was learned, numbers, and screen
   - Next step: a side photo of the real arm in that pose next to the twin, to identify the joint. Then either recalibrate or apply the corrected offset/sign.
   - Captures are saved in `cta-data/align_poses.npz`. The rejected maps are kept as `sim_real_map.rejected-*.json`.
   - Real-arm mirroring is on hold, and the app refuses without a map, by design. It is the *teacher* and baseline that the Plan 2 networks (ch. 6 MLP, ch. 4.4 time windows) must beat.
+
+## 2026-10-17 (night) · Live sim mirror working ✅
+- `uv run cta-mirror --robot none --mirrored --hand left` works: left/right, up/down, toward/away, tilt, roll, and pinch all drive the simulated SO-101.
+- **Camera lessons:**
+  - The OBSBOT was **digitally zoomed in**, which produced the blocky close-up. **Rerun remembers its view zoom per app**, so double-click a panel to reset it.
+  - Only one app can hold the camera at a time (close the OBSBOT Center preview first).
+  - Camera indices: 0 = OBSBOT, 1 = EOS virtual, 2 = innomaker, 4 = OBS virtual.
+  - The OBSBOT image is mirrored, so `--mirrored` is needed for the left/right hand labels to be correct.
+- **Bug fixed:** wrist roll thrashed because the roll difference didn't wrap at ±180°; a palm-facing-camera home pose sits right on that wrap point. Regression test added.
+- **Gripper redesign (D-N):** snap open/close with a 35%/55% dead-zone, calibrated to the user's own open hand (`c`) and pinch (`p`), and bypassing the arm smoother. The proportional version was laggy and inaccurate.
+- 93 tests passing.
