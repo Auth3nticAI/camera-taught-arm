@@ -98,6 +98,16 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
   - "open" is calibrated from your open hand when you press `c`, and "closed" from your own pinch when you press `p`.
 - **Outcome:** —
 
+### D-O · 2026-10-17 · Control mode: arm pose + hand
+- **Options:** arm pose + hand · keep hand-position IK and tune it · arm pose only
+- **Choice:** **arm pose + hand**. MediaPipe Pose tracks the user's shoulder and elbow, and those angles drive the robot's shoulder_pan, shoulder_lift and elbow_flex **directly, joint for joint**. The hand tracker still drives wrist pitch/roll and the snap gripper. The hand-position IK mode stays available as `--control hand`.
+- **Why:** with hand-position IK, the robot's elbow didn't copy Tray's elbow ("not following me correctly"). Joint-for-joint copying matches the original goal: "show which joint I'm using so robots can emulate".
+- **Known costs:**
+  - the upper body must be in frame;
+  - reaching toward the camera is hard to read (a camera 30–45° off to the side helps);
+  - roughly 25–30 fps with both trackers running.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)
