@@ -16,6 +16,9 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
   - Use **world landmarks** (meters, hip-centred, camera-aligned axes: x right, y down, z away from the camera) for angles, and image landmarks for side selection.
   - Indices: shoulders 11 (L) / 12 (R), elbows 13 / 14, wrists 15 / 16, hips 23 / 24.
 - **Hand tracker:** the existing `HandTracker` and `compute_features`, unchanged.
+- *Review fix (2026-10-17):* the frame is resized once to 1280 px wide and shared by both trackers. Pose then runs at 640 px, since its nets take 224/256 px input.
+- *Review fix:* **visibility gating.** `PoseObservation` carries per-landmark `vis` (33,) and `presence` (33,). A frame counts as **no pose** (COAST, then NO HAND) when min(vis, presence) of the tracked arm's shoulder, elbow or wrist, or of either shoulder, is below `POSE_MIN_VIS = 0.5` (`--pose-min-vis`). Guessed landmarks must not drive the arm.
+- **Hidden hips** (e.g. seated at a desk) don't drop the frame. `up` falls back to camera up (−y), made perpendicular to the shoulder line.
 
 ## Which arm
 
@@ -43,9 +46,14 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
 - `az = atan2(a·left, a·fwd)`, so 0 = forward and +90° = to the user's left.
 - The robot faces the same way as the user, and **+pan moves the robot's gripper toward −y (its right)**. Therefore `pan = −az`.
 - When the horizontal component is small (`|a_h| < 0.35 |a|`, i.e. the arm is near vertical, up or down), azimuth is undefined: **hold the previous pan**.
+- *Review fix:* the threshold now has **hysteresis**: a valid pan turns invalid below 0.30 |a| and becomes valid again above 0.40 |a|.
+- Pan is **unwrapped toward the previous pan**, and it is invalid (held) when the unwrapped value is beyond the pan range (±105° = 110° limit − 5° margin).
+- Reason: with the upper arm behind the torso, az ≈ ±180°, and noise flipped the base by about 200°.
+- Note: "invalid when a·fwd < 0" was considered and rejected. With the arm straight out to the side (a·fwd ≈ 0), the spec's "pan ≈ −90°" case would flicker.
 
 **Robot elbow_flex:**
 - Human flexion = angle between `a` and `b` (0 = straight, 180 = fully folded).
+- Flexion is **unsigned**, and the robot elbow folds only one way. A biceps curl (forearm raised) therefore makes the robot's forearm fold forward and down by the same angle.
 - Robot elbow 0 = forearm perpendicular to the upper arm (verified: lift 0 + elbow 0 = upper arm up, forearm forward; elbow +90 = folded down; elbow −90 = straight).
 - **Corrected 2026-10-17** (MuJoCo joint anchors, elbow_flex → wrist_flex axis): at elbow 0 the forearm is bent **73.82°** from the upper-arm line, not 90° (the upper arm's 14° tilt; the forearm is ~horizontal). Elbow −73.8° is straight; −90° is 16° hyperextended.
 - Therefore `elbow = flexion − ELBOW_OFFSET`, `ELBOW_OFFSET = 73.82°`: straight arm → −73.8°, 90° bend → +16.2°.
@@ -63,13 +71,24 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
 1. **Table clearance:** after computing q, if the lowest gripper/jaw point (`cta.align.ContactModel.lowest_z`) is below `table_z + 0.02` m, move shoulder_lift toward 0 (raise the arm) by bisection until it's at least 0.02 m above. Unit-test it.
    - *Added 2026-10-17:* lift 0 alone does not always clear (e.g. lift 0, elbow +40°, wrist +60°: jaws 2 cm below the table). Then lift is set to 0 and elbow_flex is bisected toward straight-up (−73.8°), which always clears. Applied to the final command each frame (after the rate limit), so it can exceed the per-frame step on lift/elbow, always in the raising direction.
 2. The same pipeline rate limit, smoother (arm joints only), joint-limit clip, COAST (< 0.15 s) and NO HAND hold semantics as `MirrorPipeline`. **No pose = NO HAND / COAST.** Hand missing but pose present: shoulder and elbow still follow, while wrist and gripper hold their last values (status `TRACKING`).
-3. The mirror app's send path is untouched: lead bound, speed limit, measured-pose seed, stall warning.
+   - *Review fix: **engagement rule.*** A body-only frame (pose present, hand missing) counts as TRACKING only if the hand was seen within the last `HAND_ENGAGE_S = 1.0` s. Otherwise the status is `NO HAND` and everything holds: showing your hand means you are engaged. A body alone never starts tracking.
+3. The mirror app's send path keeps the lead bound, speed limit, measured-pose seed and stall warning.
+   - *Review fix: **table clearance is also enforced on the SENT command.*** The per-joint speed limit and lead clip ramp each joint at the same speed, so the arm passes through poses that neither the start nor the target has. Example: (lift 24°, elbow −64°) → (84°, 69°, wrist 48°) passed (84°, 0°, 10°), about 19.5 cm below the table.
+   - `next_command` = `select_command` → lead clip → `guard_clearance` (camera-driven `--mode mirror`, both `--control` modes).
+   - A command is accepted if it clears, or if it is no lower than the previous one (so an arm resting low can rise). Otherwise the moving lift/elbow/wrist/roll/gripper joints are frozen at their previous values, fewest first; if nothing passes, the previous command holds.
+   - Paired teleop is not guarded, because the leader may touch the table.
+   - Known limit: some transitions stall safely partway (example above: the arm stops at about (51°, −37°, 27°)) instead of finding a path around.
+4. *Review fixes:*
+   - Clearance checks the **gripper, moving jaw, wrist and lower_arm** meshes (`CLEARANCE_BODIES`); align.py's touch model is unchanged. The meshes are reduced to their extreme vertices along 500 directions, so a check takes about 0.1 ms and is within 0.07 mm of exact.
+   - If `clear_table` can't find a clear pose (even after lift 0 and straightening the elbow), the previous command holds and a warning is logged once (`clearance_failures` counts them).
+   - The wrist solve picks the solution nearest the previous wrist command before clipping, so it doesn't flip end to end at the ±180° wrap.
+   - The wrist is re-solved on the final lift/elbow (after the smoother, rate limit and clearance), rate-limited, so world pitch doesn't drift. The hand pitch gets a companion One Euro filter whenever the arm smoother is on.
 
 ## Interfaces
 
 - `src/cta/pose.py`:
   - `PoseObservation(img: (33,3), world: (33,3), score: float)`
-  - `PoseTracker(model_path, infer_width=1280)` with `.detect(rgb, t) -> PoseObservation | None` and `.close()`
+  - `PoseTracker(model_path, infer_width=640)` (review fix; was 1280) with `.detect(rgb, t) -> PoseObservation | None` and `.close()`
 - `src/cta/arm_angles.py` (pure):
   - `body_frame(world, mirrored) -> (up, left, fwd)`
   - `choose_arm_side(pose_img, hand_wrist_uv, last_side, want, mirrored) -> "left" | "right"`
