@@ -125,6 +125,7 @@ class Runner:
         self.name, self.pipe, self.kind = name, pipe, kind
         self.status, self.raw, self.smooth, self.final, self.sides, self.reasons = [], [], [], [], [], {}
         self.n_fwd = []
+        self.x_sat = []  # TRACKING frames: raw target x at a box face (forward saturated)
 
     def step(self, obs, t, pose_obs, dmap):
         p = self.pipe
@@ -144,6 +145,9 @@ class Runner:
         self.smooth.append(np.clip(p.smoother.last, p.box_min, p.box_max) if tracking else None)
         self.final.append(p.target.copy() if tracking else None)
         self.n_fwd.append(p.last_n[0] if tracking and p.last_n is not None else np.nan)
+        if tracking:
+            x = p.raw_target[0]
+            self.x_sat.append(bool(x <= p.box_min[0] + 1e-6 or x >= p.box_max[0] - 1e-6))
 
     def summary(self, both):
         st = np.array(self.status)
@@ -151,11 +155,15 @@ class Runner:
         switches = int(sum(a != b for a, b in zip(sides, sides[1:])))
         held = float(np.mean(st[both] != "TRACKING")) if both.any() else float("nan")
         return {"pipeline": self.name, "side_switches": switches, "tracking_frac": float(np.mean(st == "TRACKING")),
-                "held_frac_both_present": held, "raw": stats(self.raw), "smoothed": stats(self.smooth),
+                "held_frac_both_present": held,
+                "fwd_saturated_frac": float(np.mean(self.x_sat)) if self.x_sat else float("nan"),
+                "raw_x_p5_p95": [float(v) for v in np.percentile([x[0] for x in self.raw if x is not None], [5, 95])]
+                if any(x is not None for x in self.raw) else None, "raw": stats(self.raw), "smoothed": stats(self.smooth),
                 "final": stats(self.final), "hold_reasons": self.reasons}
 
 
-def replay(take: Path, old_mod, est, kin, gains, contact, hand_points, fwd_source) -> tuple[list, dict]:
+def replay(take: Path, old_mod, est, kin, gains, contact, hand_points, fwd_source,
+           fwd_gains=(None,)) -> tuple[list, dict]:
     d = load_session(take)
     meta = json.loads((take / "meta.json").read_text())
     cm = meta["camera_mode"]
@@ -173,7 +181,10 @@ def replay(take: Path, old_mod, est, kin, gains, contact, hand_points, fwd_sourc
 
     runners = [Runner("OLD", mk(old_mod.ReachPipeline), "old")]
     for hp in hand_points:
-        runners.append(Runner(f"NEW-{hp}", mk(ReachPipeline, hand_point=hp, fwd_source=fwd_source), "new"))
+        for g in fwd_gains:
+            kw = {} if g is None else {"fwd_gain": g}
+            name = f"NEW-{hp}" + ("" if g is None else f"-g{g:g}")
+            runners.append(Runner(name, mk(ReachPipeline, hand_point=hp, fwd_source=fwd_source, **kw), "new"))
     cap = cv2.VideoCapture(str(take / "human.mp4"))
     n_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     depth_ms, d_hand, d_sh = [], [], []
@@ -218,12 +229,13 @@ def replay(take: Path, old_mod, est, kin, gains, contact, hand_points, fwd_sourc
 def fmt_table(rows: list[dict]) -> str:
     """Summary (final = the target IK aims at) + detail (raw / smoothed stages)."""
     out = ["Summary - final target (after One Euro + the 0.25 m/s target speed limit), consecutive TRACKING frames:",
-           "", "| take | pipeline | side switches | tracking | held (hand+pose present) | final p50 / p99 / max cm "
-           "| final >3 cm | final jitter p50 / p99 cm | re-acq. jumps (max cm) |", "|" + "---|" * 9]
+           "", "| take | pipeline | side switches | tracking | held (hand+pose present) | fwd saturated "
+           "| final p50 / p99 / max cm | final >3 cm | final jitter p50 / p99 cm | re-acq. jumps (max cm) |",
+           "|" + "---|" * 10]
     for r in rows:
         f = r["final"]
         out.append(f"| {r['take']} | {r['pipeline']} | {r['side_switches']} | {r['tracking_frac']:.1%} | "
-                   f"{r['held_frac_both_present']:.1%} | {f['p50']:.2f} / {f['p99']:.2f} / {f['max']:.2f} | "
+                   f"{r['held_frac_both_present']:.1%} | {r['fwd_saturated_frac']:.1%} | {f['p50']:.2f} / {f['p99']:.2f} / {f['max']:.2f} | "
                    f"{f['n_gt3']} | {f['jit50']:.2f} / {f['jit99']:.2f} | {f['reacq_n']} ({f['reacq_max']:.1f}) |")
     out += ["", "Detail - raw (before smoothing) and smoothed (One Euro output, before the speed limit):", "",
             "| take | pipeline | raw p50 / p99 / max cm | raw >3 cm | raw jitter p50 / p99 | raw re-acq. max / >3 cm "
@@ -247,6 +259,8 @@ def main(argv=None) -> int:
     ap.add_argument("--depth", choices=["model", "none"], default="model")
     ap.add_argument("--depth-input-h", type=int, default=None)
     ap.add_argument("--hand-points", default="wrist,palm")
+    ap.add_argument("--fwd-gains", default=None, help="comma list: one NEW run per forward gain (default: "
+                    "the pipeline default only)")
     ap.add_argument("--json", default=None, help="write all results here")
     args = ap.parse_args(argv)
     old_mod = load_old_pipeline(args.old_rev)
@@ -264,7 +278,8 @@ def main(argv=None) -> int:
     t0 = time.perf_counter()
     for take in args.takes:
         r, info = replay(Path(args.root) / take, old_mod, est, kin, gains, contact,
-                         args.hand_points.split(","), "depth" if est is not None else "scale")
+                         args.hand_points.split(","), "depth" if est is not None else "scale",
+                         [float(g) for g in args.fwd_gains.split(",")] if args.fwd_gains else (None,))
         rows += r
         infos.append(info)
         print(json.dumps(info))
