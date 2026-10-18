@@ -145,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
                          "hand: the hand alone drives the gripper position (IK)")
     ap.add_argument("--pose-min-vis", type=float, default=POSE_MIN_VIS,
                     help=f"--control reach/arm: min visibility/presence of the tracked arm + shoulders (default {POSE_MIN_VIS})")
+    ap.add_argument("--reach-mapping", choices=["relative", "absolute"], default="relative",
+                    help="reach: relative to calibrated home (default); absolute uses shoulder-to-wrist coordinates")
     ap.add_argument("--arm-mapping", choices=["flipped", "direct"], default="flipped",
                     help="arm mode: flipped = your hanging arm drives the robot's standing arm (default); "
                          "direct = literal copy of your arm's direction")
@@ -241,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         smoother = OneEuro(beta=args.smooth_beta)
         if args.control == "reach":
             pipe = ReachPipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
-                                 pose_min_vis=args.pose_min_vis, table_margin=args.table_margin)
+                                 pose_min_vis=args.pose_min_vis, table_margin=args.table_margin,
+                                 home_relative=args.reach_mapping == "relative")
             contact = pipe.contact  # one MuJoCo contact model, shared with the send-path clearance check
         elif args.control == "arm":
             pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
@@ -252,6 +255,9 @@ def main(argv: list[str] | None = None) -> int:
             pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
             contact = clearance_model() if follower is not None else None
         print(f"control: {args.control}")
+        if args.control == "reach":
+            print(f"reach mapping: {args.reach_mapping}; press c in a comfortable neutral pose with your arm visible")
+        last_tracking_hold = None
         prev = None
         last_meas = None
         stalled_frames = 0
@@ -285,6 +291,9 @@ def main(argv: list[str] | None = None) -> int:
                     return None
                 print("!! WARNING: recording a paired take while UNCALIBRATED: leader labels are valid, "
                       "but pipeline commands are constant; use the per-row 'status' column to mask.")
+            if args.mode == "mirror" and args.control == "reach" and pipe.home_relative and pipe.reach_home_n is None:
+                print("REFUSED: wait for a valid tracked home pose before recording a relative-reach take")
+                return None
             name = next_take_name(sessions_root, args.record)
             sim_map = SimRealMap.load()
             meta = {
@@ -298,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
                     "follower": getattr(follower, "calibration_info", lambda: None)(),
                     "leader": getattr(leader, "calibration_info", lambda: None)()},
                 "git_commit": git_commit(), "hand": args.hand, "mirrored": args.mirrored, "control": args.control,
+                "reach_mapping": args.reach_mapping if args.control == "reach" else None,
+                "reach_home_n": pipe.reach_home_n.tolist() if args.control == "reach" and pipe.reach_home_n is not None else None,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
             r = SessionRecorder(sessions_root, name, meta)
@@ -387,6 +398,14 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     stop_take()
             q, status = pipe.step(obs, t_frame) if args.control == "hand" else pipe.step(obs, t_frame, pose_obs)
+            tracking_hold = getattr(pipe, "tracking_hold_reason", None)
+            if tracking_hold != last_tracking_hold:
+                if tracking_hold is not None:
+                    print(f"TRACKING HOLD: {tracking_hold}. Robot holds still; keep your wrist and arm visible "
+                          "while tracking stabilizes.")
+                elif last_tracking_hold is not None and status == "TRACKING":
+                    print("TRACKING RESUMED (stable)")
+                last_tracking_hold = tracking_hold
             q_baseline = q.copy()
             q_leader = None
             q_foll = None
@@ -476,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
             arm_uv = None
             if heavy and pose_obs is not None and getattr(pipe, "side", None) is not None:
                 idx = list(side_indices(pipe.side, args.mirrored))  # shoulder, elbow, wrist
-                arm_uv = pose_obs.img[idx[::2] if args.control == "reach" else idx, :2]  # reach: shoulder -> wrist
+                arm_uv = pose_obs.img[idx, :2]  # show shoulder -> elbow -> wrist in both body modes
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
                            fps_ema, lat_ema, f"{status} REC" if rec is not None else status, loop_ema, extra_rad=extra,
                            arm_uv=arm_uv, reach_n=getattr(pipe, "last_n", None))

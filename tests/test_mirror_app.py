@@ -403,24 +403,24 @@ def test_control_defaults_to_reach(monkeypatch, tmp_path):
     real = mirror.ReachPipeline
 
     def spy(*a, **k):
-        seen.append(k.get("table_margin"))
+        seen.append((k.get("table_margin"), k.get("home_relative")))
         return real(*a, **k)
 
     monkeypatch.setattr(mirror, "ReachPipeline", spy)
     _run(monkeypatch, tmp_path, REST, None, ["--max-frames", "3", "--table-margin", "0.02"], fail=lambda n: False)
-    assert seen == [0.02] and FakePose.constructed == 1
+    assert seen == [(0.02, True)] and FakePose.constructed == 1
 
 
 def test_control_reach_moves_the_gripper_where_the_arm_reaches(monkeypatch, tmp_path):
     from cta.kinematics import Kinematics
     from cta.recorder import load_session
-    rc = _arm_run(monkeypatch, tmp_path, ["--record", "reach", "--autostart-record"], frames=180, control="reach")
+    rc = _arm_run(monkeypatch, tmp_path, ["--record", "reach", "--autostart-record", "--reach-mapping", "absolute"], frames=180, control="reach")
     assert rc == 0 and FakePose.constructed == 1
     sent = np.array(FakeFollower.sent)
     assert np.all(np.abs(np.diff(sent, axis=0)) <= STEP)  # app speed limit intact
     p, _ = Kinematics().fk(sent[-1])
     assert p[1] > 0.05  # the user reaches toward their left (az 30): the gripper goes to the robot's left
-    assert FakeDash.arm_points and np.asarray(FakeDash.arm_points[-1]).shape == (2, 2)  # shoulder -> wrist
+    assert FakeDash.arm_points and np.asarray(FakeDash.arm_points[-1]).shape == (3, 2)  # shoulder -> elbow -> wrist
     assert FakeDash.reach and np.asarray(FakeDash.reach[-1]).shape == (3,)
     d = load_session(tmp_path / "sessions" / "reach_01")
     assert (d["status"] == 2).all()

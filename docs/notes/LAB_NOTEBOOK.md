@@ -90,3 +90,47 @@ Dated entries: what was tried, what broke, what was learned, numbers, and screen
 3. **Range:** try `--gain 1.2 / 1.5 / 2.0`, and pick the one where your comfortable hand range covers the arm's workspace.
 4. **Jitter vs. lag:** try `--smooth-beta 0.02 / 0.05 / 0.1`. Also try the `s` key (smoothing off) to compare.
 5. Log the chosen values in DECISIONS.md. They're deck material: "tuned servo stiffness vs. shake".
+
+## 2026-10-18 - Webcam-only PyTorch learning infrastructure
+
+- User confirmed no leader arm; requested milestone plan and implementation start. Working branch: codex/webcam-learning.
+- Plan: docs/superpowers/plans/2026-10-18-webcam-learning.md. Collection and training guide: docs/WEBCAM_TRAINING.md.
+- Runtime verified: torch 2.6.0+cu124, CUDA available, NVIDIA RTX 4070 Ti. Added Transformers (locked 4.57.6).
+- Added recording audit, strict image/target pairing, tracking/finite masks, whole-take train/validation/test splits, fixed setup checks, frozen DINOv2 feature extraction, custom PyTorch regression head, checkpoint reload, CSV curves and JSON held-out metrics. Live controller unchanged.
+- Actual pretrained facebook/dinov2-small downloaded and ran on CUDA: CLS features (1, 384). Custom head backward produced finite gradients on CPU.
+- End-to-end extraction/training verified on three temporary generated video fixtures; temporary outputs removed automatically. These are software checks, NOT robot results.
+- Verification: 232 tests passed in 39.37 seconds; 12 cover the new learning pipeline. git diff --check passed (only Windows line-ending notices).
+- Real data audit: zero accepted takes and zero usable frames in the default sessions folder. No real learned-control accuracy or task success is claimed. Next action: user records 12-20 varied fixed-setup takes using the webcam teacher, then run extraction/training.
+
+## 2026-10-18 - Erratic reach control: recorded failure and fix
+
+- User reported uncontrolled-looking movement. Inspected both saved takes and decoded the second take's video with pose overlays; no hardware or camera was opened.
+- Evidence: reach_train_02 has 1,654 frames over 67.89 seconds. Reconstructed arm selection changes 25 times. At rows 1315, 1316 and 1540, shoulder image separation collapses to 0.042, 0.047 and 0.020, despite confidence near 1.0; video shows the user close to camera with upper body cropped and false shoulder landmarks near the hand. Row 1118 shows shoulders teleporting into the torso/hand area.
+- Root cause: the reach controller trusted landmark confidence and nearest-wrist arm selection every frame, allowing arm identity switches and confidently incorrect body geometry to become robot targets. No learned model is active in this live path.
+- Change: ReachPipeline holds on arm identity changes, offscreen/collapsed shoulders, shoulder teleports and abrupt normalized 3D reach changes. C calibration resets the body reference. Terminal prints TRACKING HOLD with the reason. Other control modes and physical command guards remain as before.
+- Tolerances are explicit conservative starting heuristics, not proof all pose errors can be detected. They may hold legitimate fast motion or large reframing; reframe with shoulders/arm visible and recalibrate.
+- Offline replay with the new pipeline rejected 248 frames (195 identity, 24 shoulder jumps, 20 collapsed spans, 9 3D reach jumps). All four inspected severe rows held. Report at cta-data/reach_debug_report.json and contact sheet at cta-data/reach_debug.jpg.
+- Added three regression tests; all 30 reach tests passed. Live validation still requires restarting the app and user movement. Existing recorded takes are debugging evidence, not validated clean training demonstrations.
+
+## 2026-10-18 - Elbow display and low neutral reach mapping
+
+- User screenshots showed no elbow marker and a low/flattened robot despite a raised human hand.
+- Confirmed display bug: reach mode explicitly selected indices [shoulder, wrist] for the overlay. Elbow tracking still contributed to arm length and visibility gating internally. Changed overlay to shoulder/elbow/wrist.
+- Confirmed mapping issue: legacy target = robot shoulder + robot reach * normalized human shoulder-to-wrist vector. A natural hand-below-shoulder posture can put the requested gripper below the table, clamping it to the floor. This was not neutral-pose calibrated.
+- CLI now defaults to home-relative reach: first accepted body pose after C maps to calibration p0 (raised ready target); relative changes drive Cartesian position through the existing IK and guards. The library retains absolute default for compatibility with existing experiments; CLI has explicit --reach-mapping absolute fallback.
+- Recordings store reach_mapping and reach_home_n; cache extraction refuses mixed references. Relative recording waits for a valid tracked home reference. Paired-mode legacy recording remains unaffected.
+- Checked recent recordings: reach_train_03/04 both use legacy absolute mapping. In take 04, 7 of 243 frames with hand wrist visibly above the selected shoulder still had inferred normalized world-up below -0.1, showing additional pose inconsistency. Camera image and learned 3D pose are not interchangeable. No claim that the home offset solves all pose errors.
+- New regression verifies a neutral wrist below shoulder maps to >14 cm gripper height, raising the wrist raises the target, and recalibration resets the reference. App test verifies elbow overlay and relative default.
+- Live verification pending restart; no camera or physical robot operated during this diagnosis.
+
+## 2026-10-18 - Wrist-loss hold/resume jitter correction
+
+- User supplied a long alternating TRACKING HOLD: 3D reach jumped / TRACKING RESUMED log and screenshots showing wrist losses and loop-time spikes. No new NPZ sessions were saved for this run; the log confirms guard chatter, while screenshots alone do not isolate the latency spikes.
+- Code root causes reproduced in failing tests: (1) reach could continue body-driven motion for up to one second after hand loss and change pitch to a fallback angle, (2) jump acceptance relaxed with time since last accepted frame, (3) a single good-looking frame immediately resumed motion, and (4) hand selection immediately fell back to a distant handedness-labelled detection.
+- Fix: no wrist or invalid wrist orientation => exact all-joint hold. Pose and hand wrist must agree within 0.12 normalized image distance. Recovery requires three consecutive consistent observations (normalized reach delta <=0.12, shoulder delta <=0.04, gap <=0.2 seconds); geometry and identity checks still apply. A lone good frame cannot resume.
+- On relative-mode recovery, rebase the human reach reference to the held target (clutch behavior). Recovery should not chase a newly inferred absolute hand location. This changes the relation to the original calibration after a loss; it is deliberate to prioritize continuity. Recalibration restores explicit home alignment.
+- Relative target speed capped at 0.25 m/s; final joint steps, including solver clearance corrections, capped at 90 degrees/second with elapsed time capped at 50 ms. Table checks remain after the limiter. Hand tracker waits for position-track expiry rather than jumping to a distant hand immediately.
+- Targeted verification: all 38 hand/reach tests passed, including reproduced missing-wrist movement, alternating-depth chatter, recovery and time-step bound. Full-suite result follows below. No claim of solved camera detection; live validation after restart remains required.
+
+Implementation note: stable recovery is currently three consecutive observations, not a guarantee of correct hand detection. No camera or robot was opened in this session. Startup still reports UNCALIBRATED before calibration. A full-suite run initially caught that status regression (1 failed, 237 passed); it was corrected before the final rerun.
+Final wrist-recovery verification: 238 tests passed in 45.34 seconds. git diff --check passed, with Windows line-ending notices only. Live user validation is pending restart.

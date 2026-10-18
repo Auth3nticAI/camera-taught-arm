@@ -149,6 +149,8 @@ The dashboard shows the live tracking and arm state. The recorder captures demon
 
 ## Data & models
 
+**PyTorch learning pipeline:** see [Webcam training](docs/WEBCAM_TRAINING.md) for recording takes, auditing synchronized data, extracting pretrained DINOv2 features, and training/evaluating the custom joint-prediction head. See the [October 18-24 milestone plan](docs/superpowers/plans/2026-10-18-webcam-learning.md). This offline workflow uses webcam demonstrations and the existing controller as teacher, with no leader arm. Learned live control is a later milestone.
+
 Large files live outside the repository. `CTA_DATA_DIR` defaults to:
 
 ```text

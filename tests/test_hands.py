@@ -28,9 +28,9 @@ def test_choose_hand_follows_position_when_label_flips():
     assert choose_hand(labels, scores, wrists, want="left", mirrored_input=True, last_wrist=(0.7, 0.6)) == 1
 
 
-def test_choose_hand_uses_label_without_history_or_after_big_jump():
+def test_choose_hand_uses_label_only_without_history():
     from cta.hands import choose_hand
 
     labels, scores, wrists = ["Left", "Right"], [0.9, 0.9], [(0.2, 0.5), (0.7, 0.6)]
     assert choose_hand(labels, scores, wrists, "left", True, last_wrist=None) == 0
-    assert choose_hand(labels, scores, wrists, "left", True, last_wrist=(0.5, 0.1)) == 0  # nothing near
+    assert choose_hand(labels, scores, wrists, "left", True, last_wrist=(0.5, 0.1)) is None

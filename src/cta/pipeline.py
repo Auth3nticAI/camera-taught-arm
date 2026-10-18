@@ -395,21 +395,35 @@ class ReachPipeline(_BodyPipeline):
     Shoulder->wrist reach / the user's arm length = n (|n| <= 1); gripper target = robot shoulder + robot
     reach * n, clipped to the workspace box (z floor = table + margin + pad). The arm smoother runs on that
     3-D target, then Kinematics.ik picks the robot's own joints (rate limit + joint clip on its output).
-    Hand: claw pitch (calibrated, as in hand mode), wrapped roll, snap gripper. Hand missing (still engaged):
-    the last hand pitch for COAST_S, then ~45 deg down; roll and gripper hold."""
+    Hand: claw pitch (calibrated, as in hand mode), wrapped roll, snap gripper.
+    A missing or inconsistent wrist holds all joints until stable reacquisition."""
 
     def __init__(self, kin: Kinematics, cal: Calibration | None, gains: MapGains,
                  smoother: OneEuro | None, max_step_rad: float = 0.15, aspect: float = 16 / 9,
                  mirrored: bool = False, want: str = "left", pose_min_vis: float = POSE_MIN_VIS,
-                 contact=None, table_margin: float = TABLE_CLEARANCE_M):
+                 contact=None, table_margin: float = TABLE_CLEARANCE_M, home_relative: bool = False):
         super().__init__(kin, cal, gains, smoother, max_step_rad, aspect, mirrored, want, pose_min_vis,
                          contact, table_margin)
         self.robot_shoulder = kin.shoulder_anchor()
         self.robot_reach = REACH_FRACTION * kin.max_reach()
+        # The CLI selects home-relative mapping; absolute mapping remains available for old experiments.
+        self.home_relative = home_relative
+        self.reach_home_n: np.ndarray | None = None
         self.box_min = np.array(gains.box_min, dtype=float)
         self.box_max = np.array(gains.box_max, dtype=float)
         self.box_min[2] = self.contact.table_z + table_margin + CLEARANCE_PAD_M
         self.arm_length = ArmLength()
+        self.tracking_hold_reason: str | None = None
+        self._shoulders_ref: np.ndarray | None = None
+        self._shoulder_span: float | None = None
+        self._reach_accepted_t: float | None = None
+        self._reach_sample_t: float | None = None
+        self._recovering = False
+        self._candidate_n: np.ndarray | None = None
+        self._candidate_shoulders: np.ndarray | None = None
+        self._candidate_count = 0
+        self._candidate_t: float | None = None
+        self._held_target: np.ndarray | None = None
         self.last_n: np.ndarray | None = None
         self.raw_target: np.ndarray | None = None
         self.target: np.ndarray | None = None
@@ -489,35 +503,137 @@ class ReachPipeline(_BodyPipeline):
                 lo = mid[2]
         return q_hi, best_t
 
+    def calibrate(self, obs: HandObservation) -> None:
+        super().calibrate(obs)
+        # Reframing deliberately requires calibration; never inherit a corrupted body reference.
+        self.side = None
+        self._shoulders_ref = None
+        self._shoulder_span = None
+        self._reach_accepted_t = None
+        self._reach_sample_t = None
+        self._recovering = False
+        self._candidate_n = None
+        self._candidate_count = 0
+        self._candidate_t = None
+        self._held_target = None
+        self.arm_length = ArmLength()
+        self.last_n = None
+        self.reach_home_n = None
+        self.tracking_hold_reason = None
+
+    def _tracking_glitch(self, pose_obs, side: str, n: np.ndarray, t: float) -> str | None:
+        """Confidence alone cannot detect confident hallucinations in a cropped body.
+
+        Tolerances are conservative initial choices, verified against recorded failure patterns;
+        they are not a learned detector. Hold, then return to view or recalibrate deliberately.
+        """
+        shoulders = np.asarray(pose_obs.img[[11, 12], :2])
+        span = float(np.linalg.norm(shoulders[0] - shoulders[1]))
+        if np.any(shoulders < 0.02) or np.any(shoulders > 0.98):
+            return 'shoulders outside camera view'
+        if span < 0.06 or (self._shoulder_span is not None and
+                          not 0.5 * self._shoulder_span <= span <= 2.0 * self._shoulder_span):
+            return 'shoulder span collapsed or changed'
+        if self.side is not None and side != self.side:
+            return 'arm identity changed'
+        if self._reach_accepted_t is not None:
+            dt = max(0.0, t - self._reach_accepted_t)
+            displacement = np.linalg.norm(shoulders - self._shoulders_ref, axis=1).max()
+            if displacement > 0.08 + 0.8 * min(dt, 0.1):
+                return 'shoulders jumped'
+            if not self._recovering and np.linalg.norm(n - self.last_n) > 0.25 + 3.0 * min(dt, 0.1):
+                return '3D reach jumped'
+        return None
+
+    def _hold_reach(self, reason: str, t: float) -> tuple[np.ndarray, str]:
+        if not self._recovering:
+            self._held_target = self.target.copy() if self.target is not None else self.kin.fk(self.q_cmd)[0].copy()
+        self._recovering = True
+        self._candidate_n = None
+        self._candidate_count = 0
+        self.tracking_hold_reason = reason
+        return self._lost(t)
+
     def step(self, obs: HandObservation | None, t: float, pose_obs=None) -> tuple[np.ndarray, str]:
+        self.tracking_hold_reason = None
+        sample_dt = 1 / 60 if self._reach_sample_t is None else max(0.0, min(t - self._reach_sample_t, 0.05))
+        self._reach_sample_t = t
+        if self.cal is None:
+            self.last_features = self._features(obs) if obs is not None else None
+            return READY_Q.astype(float).copy(), 'UNCALIBRATED'
+        if obs is None:
+            return self._hold_reach('wrist not visible', t)
         early, g = self._gate(obs, t, pose_obs)
         if early is not None:
+            if self.cal is not None:
+                return self._hold_reach('arm pose not reliable', t)
             return early
+        if g.hand is None:
+            return self._hold_reach('wrist orientation not reliable', t)
+        wrist = side_indices(g.side, self.mirrored)[2]
+        if np.linalg.norm(pose_obs.img[wrist, :2] - obs.lm_img[0, :2]) > 0.12:
+            return self._hold_reach('wrist disagrees with arm tracker', t)
         r, length_frame = reach_vector(pose_obs.world, g.side, self.mirrored, g.hips_ok)
         length = self.arm_length.update(length_frame)
         if not (np.all(np.isfinite(r)) and np.isfinite(length) and length > 0):
             return self._lost(t)
-        self._accept(g, t)
         n = r / length
         if np.linalg.norm(n) > 1.0:
             n = n / np.linalg.norm(n)
+        reason = self._tracking_glitch(pose_obs, g.side, n, t)
+        if reason is not None:
+            return self._hold_reach(reason, t)
+        if self._recovering:
+            shoulders = np.asarray(pose_obs.img[[11, 12], :2])
+            consistent = (self._candidate_n is not None and t - self._candidate_t <= 0.2 and
+                          np.linalg.norm(n - self._candidate_n) <= 0.12 and
+                          np.linalg.norm(shoulders - self._candidate_shoulders, axis=1).max() <= 0.04)
+            self._candidate_count = self._candidate_count + 1 if consistent else 1
+            self._candidate_n, self._candidate_shoulders, self._candidate_t = n.copy(), shoulders.copy(), t
+            if self._candidate_count < 3:
+                self.tracking_hold_reason = 'waiting for stable wrist and arm'
+                return self._lost(t)
+            if self.home_relative and self.reach_home_n is not None:
+                # Clutch on recovery: a newly observed hand position must not move the held robot.
+                self.reach_home_n = n - (self._held_target - self.cal.p0) / self.robot_reach
+                if self.smoother is not None:
+                    self.smoother.reset()
+                    self.smoother(self._held_target, t)
+            self._recovering = False
+        self._accept(g, t)
+        self._shoulders_ref = np.array(pose_obs.img[[11, 12], :2], copy=True)
+        if self._shoulder_span is None:
+            self._shoulder_span = float(np.linalg.norm(self._shoulders_ref[0] - self._shoulders_ref[1]))
+        self._reach_accepted_t = t
         self.last_n = n
-        self.raw_target = reach_target(n, self.robot_shoulder, self.robot_reach, self.box_min, self.box_max)
+        if self.home_relative:
+            if self.reach_home_n is None:
+                self.reach_home_n = n.copy()
+            self.raw_target = np.clip(self.cal.p0 + self.robot_reach * (n - self.reach_home_n),
+                                      self.box_min, self.box_max)
+        else:
+            self.raw_target = reach_target(n, self.robot_shoulder, self.robot_reach, self.box_min, self.box_max)
         target = self.raw_target
         if self.smoother is not None:  # smooth in space (the target), not the joints
             target = np.clip(np.asarray(self.smoother(target, t), dtype=float), self.box_min, self.box_max)
+        if self.home_relative and self.target is not None:
+            delta = target - self.target
+            distance = float(np.linalg.norm(delta))
+            if distance > 0:
+                target = self.target + delta * min(1.0, 0.25 * sample_dt / distance)
         self.target = target
         prev = self.q_cmd.copy()
-        if g.hand is not None:
-            _, pitch, roll, grip = g.hand
-            self._hand_pitch = self._smooth_pitch(pitch, t)
-            self.pitch_target = self._hand_pitch
-            self.roll_target = self._smooth_roll(roll, t)
-            roll, grip = float(np.clip(self.roll_target, *SIM_LIMITS[4])), self._snap_grip(grip)
-        else:  # brief dropout: keep the hand's pitch; longer: a natural ~45 deg down. Roll + gripper hold.
-            recent = self._hand_pitch is not None and t - self._hand_seen_t <= COAST_S
-            self.pitch_target = self._hand_pitch if recent else NO_HAND_PITCH_RAD
-            roll, grip = prev[4], prev[5]
+        _, pitch, roll, grip = g.hand
+        self._hand_pitch = self._smooth_pitch(pitch, t)
+        self.pitch_target = self._hand_pitch
+        self.roll_target = self._smooth_roll(roll, t)
+        roll, grip = float(np.clip(self.roll_target, *SIM_LIMITS[4])), self._snap_grip(grip)
         q, self.ik_target = self._ik_clear(target, self.pitch_target, prev, roll, grip)
         out = self._finish(q[:5], grip, t, smooth=False).copy()
-        return self._clear_or_hold(out, prev)
+        out, status = self._clear_or_hold(out, prev)
+        if self.home_relative:
+            # Apply after clearance too: the corrective solver must not bypass time-based limits.
+            bounded = prev + np.clip(out - prev, -np.radians(90) * sample_dt, np.radians(90) * sample_dt)
+            self.q_cmd, _ = guard_clearance(bounded, prev, self.contact, self.table_margin)
+            return self.q_cmd.copy(), status
+        return out, status

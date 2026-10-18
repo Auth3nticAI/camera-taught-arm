@@ -49,6 +49,7 @@ def choose_hand(handedness_labels: list[str], scores: list[float], wrists: list[
         i = int(np.argmin(d))
         if d[i] <= MAX_WRIST_JUMP:
             return i
+        return None  # let the track expire before label-based acquisition of a distant hand
     return select_hand(handedness_labels, scores, want, mirrored_input)
 
 

@@ -86,6 +86,85 @@ def test_arm_length_median_ignores_a_bent_frame():
     assert ArmLength().update(0.5) == pytest.approx(0.5)  # initialized on the first good frame
 
 
+def test_reach_holds_when_tracker_switches_to_other_arm(kin, gains):
+    p = calibrated(kin, gains)
+    po = pose()
+    q0, _ = p.step(hand(po), 0.0, po)
+    other = pose(side='right')
+    lm_img, lm_world = make_hand(wrist_uv=tuple(other.img[16, :2]))
+    obs = HandObservation(lm_img, lm_world, 'right', 0.9)
+    q1, status = p.step(obs, 0.03, other)
+    assert np.array_equal(q0, q1)
+    assert status == 'COAST' and p.tracking_hold_reason == 'arm identity changed'
+
+
+def test_reach_holds_confident_collapsed_or_teleported_shoulders(kin, gains):
+    p = calibrated(kin, gains)
+    po = pose()
+    q0, _ = p.step(hand(po), 0.0, po)
+    bad = pose()
+    bad.img[[11, 12], :2] = [[0.481, 0.405], [0.502, 0.368]]  # recorded glitch at row 1315
+    q1, _ = p.step(hand(po), 0.04, bad)
+    assert np.array_equal(q0, q1) and p.tracking_hold_reason == 'shoulder span collapsed or changed'
+    bad = pose()
+    bad.img[[11, 12], 1] += 0.4
+    q2, _ = p.step(hand(po), 0.08, bad)
+    assert np.array_equal(q0, q2) and p.tracking_hold_reason == 'shoulders jumped'
+
+
+def test_reach_rejects_confident_world_jump_and_recovers_on_return(kin, gains):
+    p = calibrated(kin, gains)
+    po = pose()
+    q0, _ = p.step(hand(po), 0.0, po)
+    flipped = pose(0, 150)
+    q1, _ = p.step(hand(flipped), 0.03, flipped)
+    assert np.array_equal(q0, q1) and p.tracking_hold_reason == '3D reach jumped'
+    for t in (0.06, 0.09, 0.12):
+        _, status = p.step(hand(po), t, po)
+    assert status == 'TRACKING' and p.tracking_hold_reason is None
+
+
+def test_missing_wrist_holds_all_joints_and_requires_stable_reacquisition(kin, gains):
+    p = calibrated(kin, gains, home_relative=True)
+    po = pose(0, 60, 60)
+    q0, _ = run(p, hand(po, roll=0.3), po, n=50)
+    for t in (1.0, 1.2, 1.5):
+        q, status = p.step(None, t, pose(50, 110))
+        assert np.array_equal(q, q0) and status != 'TRACKING'
+    changed = pose(45, 75, 45)
+    for t in (1.53, 1.56):
+        q, status = p.step(hand(changed), t, changed)
+        assert np.array_equal(q, q0) and status != 'TRACKING'
+    q, status = p.step(hand(changed), 1.59, changed)
+    assert status == 'TRACKING'
+    assert np.linalg.norm(p.target - p._held_target) < 1e-6  # clutch: no chase toward a new absolute hand position
+    assert np.max(np.abs(q[:5] - q0[:5])) <= np.radians(90) * 0.03 + 1e-6
+
+
+def test_alternating_depth_glitches_cannot_resume_by_waiting(kin, gains):
+    p = calibrated(kin, gains, home_relative=True)
+    good, bad = pose(0, 60, 60), pose(0, 150)
+    q0, _ = p.step(hand(good), 0.0, good)
+    for i in range(1, 80):
+        po = bad if i % 2 else good
+        q, status = p.step(hand(po), i / 30, po)
+        assert np.array_equal(q, q0) and status != 'TRACKING'
+
+
+def test_home_relative_reach_keeps_neutral_hand_above_table(kin, gains):
+    p = calibrated(kin, gains, home_relative=True)
+    neutral = pose(0, 120, 30)  # wrist naturally below the human shoulder
+    run(p, hand(neutral), neutral)
+    assert np.allclose(p.raw_target, p.cal.p0, atol=1e-6)
+    assert p.raw_target[2] > 0.14  # neutral should not be clamped to table height
+    higher = pose(0, 100, 30)
+    run(p, hand(higher), higher, t0=2.0)
+    assert p.raw_target[2] > p.cal.p0[2] + 0.04
+    p.calibrate(hand(higher))
+    run(p, hand(higher), higher, t0=4.0)
+    assert np.allclose(p.raw_target, p.cal.p0, atol=1e-6)
+
+
 def test_reach_target_clamps_and_clips():
     sh, reach = np.array([0.07, -0.02, 0.12]), 0.4
     lo, hi = np.array([0.2, -0.3, 0.01]), np.array([0.44, 0.3, 0.25])
@@ -216,17 +295,15 @@ def test_hand_pitch_drives_the_claw(kin, gains):
     assert kin.fk(q)[1] == pytest.approx(p.cal.pitch_home - 0.3, abs=D(4))
 
 
-def test_no_hand_default_pitch_and_holds_roll_gripper(kin, gains):
+def test_no_hand_holds_every_joint_without_fallback_pitch(kin, gains):
     p = calibrated(kin, gains)
     po = pose(0, 45, 90)
     q0, _ = run(p, hand(po, pinch_closed=True, roll=0.4), po, n=40)
     q1, s1 = p.step(None, 40 / 60 + COAST_S / 2, po)  # brief hand dropout: keep the last hand pitch
-    assert s1 == "TRACKING" and p.pitch_target == pytest.approx(p._hand_pitch)
+    assert s1 == "COAST" and np.array_equal(q1, q0)
     for i in range(30):  # hand gone 0.2 .. 0.7 s (still engaged): settle toward the default ~45 deg down
         q, s = p.step(None, 40 / 60 + 0.2 + i / 60, po)
-    assert s == "TRACKING" and p.pitch_target == NO_HAND_PITCH_RAD
-    assert kin.fk(q)[1] == pytest.approx(NO_HAND_PITCH_RAD, abs=D(5))
-    assert q[4] == q0[4] and q[5] == q0[5]  # roll and gripper held
+    assert s == "NO HAND" and np.array_equal(q, q0)
 
 
 class SpySmoother:

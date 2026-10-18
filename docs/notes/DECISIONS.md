@@ -131,3 +131,12 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 
 ## Open (waiting for Tray)
 D-01 demo-day priority · D-03 label source · D-04 depth cue · D-05 smoother architecture · D-06 ACT vs SmolVLA · D-07 where the motors connect · company/startup name · D-10 confirm the label-shift plan, the smoother target, and the gate targets. Details are in `docs/specs/2026-10-16-takeworthy-design.md` §7.
+
+### October 18 update: webcam-only learning direction
+
+- **User instruction:** no leader arm; learn from webcam movements. Plan the next milestones and start implementation.
+- **Supersedes:** D-03 leader pairing and the older design's leader-ground-truth claims. Existing paired-mode code is retained, but is excluded from the new learning workflow.
+- **Implementation choice:** start with Hugging Face `facebook/dinov2-small` frozen features and a custom PyTorch regression head, trained against the working reach controller's `q_baseline` targets. This is controller distillation, not independently measured physical accuracy.
+- **Reason:** reuses synchronized webcam/command recording and provides a trainable network within the October 24 deadline. Full fine-tuning, temporal modeling and live deployment follow evaluation.
+- **Data constraint:** fixed camera/calibration/control setup; complete-take splits; no fabricated robot results. No recorded takes currently exist in the default data root.
+- **Plan:** `docs/superpowers/plans/2026-10-18-webcam-learning.md`; commands in `docs/WEBCAM_TRAINING.md`.
