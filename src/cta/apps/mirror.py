@@ -1,8 +1,9 @@
 """cta-mirror: webcam arm + hand -> SO-101 twin / real arm.
 
---control arm (default, decision D-O): the user's shoulder/elbow (MediaPipe Pose) drive the robot's
-shoulder and elbow joint for joint; the hand drives the wrist and gripper. --control hand: the hand alone
-drives the gripper position through IK (the original mode)."""
+--control reach (default, Tray 2026-10-18): your arm says WHERE (shoulder->wrist reach, scaled to the
+robot's reach), the robot gets there with its own IK; your hand is the claw (pitch, roll, snap grip).
+--control arm (decision D-O): your shoulder/elbow drive the robot's joint for joint; the hand drives the
+wrist and gripper. --control hand: the hand alone drives the gripper position through IK (original mode)."""
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,8 @@ from cta.hands import HandTracker
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
-from cta.pipeline import (POSE_MIN_VIS, TABLE_CLEARANCE_M, ArmPosePipeline, MirrorPipeline, clearance_model,
+from cta.pipeline import (POSE_MIN_VIS, TABLE_CLEARANCE_M, ArmPosePipeline, MirrorPipeline, ReachPipeline,
+                          clearance_model,
                           guard_clearance)
 from cta.pose import PoseTracker
 from cta.recorder import STATUS_CODES, STATUS_UNKNOWN, SessionRecorder, git_commit, next_take_name
@@ -137,11 +139,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--robot", choices=["none", "so101"], default="none")
     ap.add_argument("--follower-port", default=None, help="follower serial port, e.g. COM3 (--robot so101)")
     ap.add_argument("--leader-port", default=None, help="leader serial port (required for --mode paired)")
-    ap.add_argument("--control", choices=["arm", "hand"], default="arm",
-                    help="arm (default): your shoulder/elbow drive the robot's, hand drives wrist+gripper; "
+    ap.add_argument("--control", choices=["reach", "arm", "hand"], default="reach",
+                    help="reach (default): your arm's reach moves the gripper (robot's own IK), hand = claw; "
+                         "arm: your shoulder/elbow drive the robot's joint for joint; "
                          "hand: the hand alone drives the gripper position (IK)")
     ap.add_argument("--pose-min-vis", type=float, default=POSE_MIN_VIS,
-                    help=f"--control arm: min visibility/presence of the tracked arm + shoulders (default {POSE_MIN_VIS})")
+                    help=f"--control reach/arm: min visibility/presence of the tracked arm + shoulders (default {POSE_MIN_VIS})")
     ap.add_argument("--arm-mapping", choices=["flipped", "direct"], default="flipped",
                     help="arm mode: flipped = your hanging arm drives the robot's standing arm (default); "
                          "direct = literal copy of your arm's direction")
@@ -236,7 +239,11 @@ def main(argv: list[str] | None = None) -> int:
         gains = dataclasses.replace(gains, k_lat=gains.k_lat * args.gain, k_vert=gains.k_vert * args.gain,
                                     k_fwd=gains.k_fwd * args.gain)
         smoother = OneEuro(beta=args.smooth_beta)
-        if args.control == "arm":
+        if args.control == "reach":
+            pipe = ReachPipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
+                                 pose_min_vis=args.pose_min_vis, table_margin=args.table_margin)
+            contact = pipe.contact  # one MuJoCo contact model, shared with the send-path clearance check
+        elif args.control == "arm":
             pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
                                    pose_min_vis=args.pose_min_vis, table_margin=args.table_margin,
                                    flip=args.arm_mapping == "flipped")
@@ -260,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         last_cmd_t = None
         tracker = HandTracker(models_dir() / "hand_landmarker.task", want=args.hand,
                               mirrored_input=args.mirrored)
-        if args.control == "arm":
+        if args.control in ("reach", "arm"):
             pose_tracker = PoseTracker(models_dir() / "pose_landmarker_full.task")
         twin = Twin()
         dash = Dashboard()
@@ -379,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
                     rec = start_take()
                 else:
                     stop_take()
-            q, status = pipe.step(obs, t_frame, pose_obs) if args.control == "arm" else pipe.step(obs, t_frame)
+            q, status = pipe.step(obs, t_frame) if args.control == "hand" else pipe.step(obs, t_frame, pose_obs)
             q_baseline = q.copy()
             q_leader = None
             q_foll = None
@@ -468,10 +475,11 @@ def main(argv: list[str] | None = None) -> int:
             twin_rgb = twin.render(q) if heavy else None
             arm_uv = None
             if heavy and pose_obs is not None and getattr(pipe, "side", None) is not None:
-                arm_uv = pose_obs.img[list(side_indices(pipe.side, args.mirrored)), :2]  # shoulder, elbow, wrist
+                idx = list(side_indices(pipe.side, args.mirrored))  # shoulder, elbow, wrist
+                arm_uv = pose_obs.img[idx[::2] if args.control == "reach" else idx, :2]  # reach: shoulder -> wrist
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
                            fps_ema, lat_ema, f"{status} REC" if rec is not None else status, loop_ema, extra_rad=extra,
-                           arm_uv=arm_uv)
+                           arm_uv=arm_uv, reach_n=getattr(pipe, "last_n", None))
             loop_ms = (time.perf_counter() - t_frame) * 1000  # frame read -> end of iteration
             loop_ema = loop_ms if loop_ema == 0.0 else 0.9 * loop_ema + 0.1 * loop_ms
             if args.max_frames and n >= args.max_frames:

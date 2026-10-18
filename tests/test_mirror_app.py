@@ -73,10 +73,13 @@ class FakeTwin:
 
 class FakeDash:
     arm_points = []
+    reach = []
 
     def log_frame(self, *a, **k):
         if k.get("arm_uv") is not None:
             FakeDash.arm_points.append(k["arm_uv"])
+        if k.get("reach_n") is not None:
+            FakeDash.reach.append(k["reach_n"])
 
 
 class FakeFollower:
@@ -147,6 +150,7 @@ def _run(monkeypatch, tmp_path, pose, leader, extra, map_file=True, fail=None, l
             json.dumps({"sign": [1] * 5, "offset_deg": [0] * 5}))
     closed.clear()
     FakeDash.arm_points.clear()
+    FakeDash.reach.clear()
     FakePose.constructed = 0
     FakeFollower.sent.clear()
     FakeFollower.calls = FakeFollower.reads = FakeLeader.calls = 0
@@ -317,8 +321,8 @@ def test_control_hand_never_builds_pose_tracker(monkeypatch, tmp_path):
         assert np.all(np.abs(q - REST) <= STEP)
 
 
-def _arm_run(monkeypatch, tmp_path, extra, frames=120):
-    """--control arm (the default) with a raised left arm (az 30, elev 60, flex 40) and a hand on its wrist."""
+def _arm_run(monkeypatch, tmp_path, extra, frames=120, control="arm"):
+    """A raised left arm (az 30, elev 60, flex 40) with a hand on its wrist, in --control arm (or `control`)."""
     from helpers import bend, body_dir, make_body, make_hand
 
     from cta.hands import HandObservation
@@ -329,7 +333,8 @@ def _arm_run(monkeypatch, tmp_path, extra, frames=120):
     STATE["clock"] = 0.0
     STATE["deadband"] = 0.0  # the fake follower reaches each command, so the lead bound lets it move
     try:
-        return _run(monkeypatch, tmp_path, REST, None, ["--max-frames", str(frames), "--hand", "left", *extra],
+        return _run(monkeypatch, tmp_path, REST, None,
+                    ["--control", control, "--max-frames", str(frames), "--hand", "left", *extra],
                     fail=lambda n: False, calib=_save_cal(tmp_path))
     finally:
         FakePose.obs = FakeTracker.obs = None
@@ -388,3 +393,36 @@ def test_table_margin_flag_reaches_pipeline_and_send_path(monkeypatch, tmp_path)
 def test_table_margin_out_of_range_is_rejected(bad):
     with pytest.raises(SystemExit):
         mirror.main(["--robot", "none", "--table-margin", bad])
+
+
+
+# ---- --control reach (the default) ---------------------------------------------------------------------
+
+def test_control_defaults_to_reach(monkeypatch, tmp_path):
+    seen = []
+    real = mirror.ReachPipeline
+
+    def spy(*a, **k):
+        seen.append(k.get("table_margin"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(mirror, "ReachPipeline", spy)
+    _run(monkeypatch, tmp_path, REST, None, ["--max-frames", "3", "--table-margin", "0.02"], fail=lambda n: False)
+    assert seen == [0.02] and FakePose.constructed == 1
+
+
+def test_control_reach_moves_the_gripper_where_the_arm_reaches(monkeypatch, tmp_path):
+    from cta.kinematics import Kinematics
+    from cta.recorder import load_session
+    rc = _arm_run(monkeypatch, tmp_path, ["--record", "reach", "--autostart-record"], frames=180, control="reach")
+    assert rc == 0 and FakePose.constructed == 1
+    sent = np.array(FakeFollower.sent)
+    assert np.all(np.abs(np.diff(sent, axis=0)) <= STEP)  # app speed limit intact
+    p, _ = Kinematics().fk(sent[-1])
+    assert p[1] > 0.05  # the user reaches toward their left (az 30): the gripper goes to the robot's left
+    assert FakeDash.arm_points and np.asarray(FakeDash.arm_points[-1]).shape == (2, 2)  # shoulder -> wrist
+    assert FakeDash.reach and np.asarray(FakeDash.reach[-1]).shape == (3,)
+    d = load_session(tmp_path / "sessions" / "reach_01")
+    assert (d["status"] == 2).all()
+    meta = json.loads((tmp_path / "sessions" / "reach_01" / "meta.json").read_text())
+    assert meta["control"] == "reach"

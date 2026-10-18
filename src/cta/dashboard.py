@@ -20,10 +20,11 @@ class Dashboard:
     def log_frame(self, rgb: np.ndarray | None, obs: HandObservation | None, twin_rgb: np.ndarray | None,
                   q_cmd: np.ndarray, fps: float, latency_ms: float, status: str,
                   loop_ms: float | None = None, extra_rad: dict[str, np.ndarray] | None = None,
-                  arm_uv: np.ndarray | None = None) -> None:
+                  arm_uv: np.ndarray | None = None, reach_n: np.ndarray | None = None) -> None:
         """Scalars/status every call; images only when rgb / twin_rgb are given (decimation).
 
-        arm_uv: (3, 2) normalized image coords of the tracked arm's shoulder, elbow, wrist (--control arm)."""
+        arm_uv: (k, 2) normalized image coords of the tracked arm (arm: shoulder, elbow, wrist; reach: shoulder,
+        wrist). reach_n: (3,) normalized reach (fwd, left, up) of --control reach, logged as reach/n_x..n_z."""
         if rgb is not None:
             h, w = rgb.shape[:2]
             if w > LOG_WIDTH:
@@ -49,6 +50,9 @@ class Dashboard:
         for prefix, vec in (extra_rad or {}).items():
             for i, name in enumerate(JOINTS):
                 rr.log(f"{prefix}/{name}", rr.Scalars(float(np.degrees(vec[i]))))
+        if reach_n is not None:
+            for axis, v in zip("xyz", reach_n):
+                rr.log(f"reach/n_{axis}", rr.Scalars(float(v)))
         rr.log("stats/fps", rr.Scalars(float(fps)))
         rr.log("stats/latency_ms", rr.Scalars(float(latency_ms)))
         if loop_ms is not None:
