@@ -58,7 +58,8 @@ class SessionRecorder:
     _SHAPES = {"t": (), "hand_present": (), "lm_img": (21, 3), "lm_world": (21, 3), "feats": (6,),
                "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,), "status": (), "smoother_on": (),
                "pose_img": (33, 3), "pose_world": (33, 3)}
-    _DTYPES = {"hand_present": bool, "status": np.uint8, "smoother_on": np.int8}
+    _DTYPES = {"hand_present": bool, "status": np.uint8, "smoother_on": np.int8,
+               "pose_img": np.float32, "pose_world": np.float32}
 
     def __init__(self, root: Path, name: str, meta: dict, autosave_s: float = 30.0,
                  video_size: tuple[int, int] = (1280, 720)):

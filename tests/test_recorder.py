@@ -135,5 +135,6 @@ def test_pose_rows_roundtrip_and_nan_when_absent(tmp_path):
     assert d["pose_img"].shape == (2, 33, 3) and d["pose_world"].shape == (2, 33, 3)
     assert np.allclose(d["pose_img"][0], 0.25) and np.allclose(d["pose_world"][0], -0.5)
     assert np.isnan(d["pose_img"][1]).all() and np.isnan(d["pose_world"][1]).all()
+    assert d["pose_img"].dtype == np.float32 and d["pose_world"].dtype == np.float32
     import json
     assert json.loads((tmp_path / "s" / "meta.json").read_text())["control"] == "arm"
