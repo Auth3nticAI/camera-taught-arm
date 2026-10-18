@@ -22,7 +22,8 @@ from cta.hands import HandTracker
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
-from cta.pipeline import POSE_MIN_VIS, ArmPosePipeline, MirrorPipeline, clearance_model, guard_clearance
+from cta.pipeline import (POSE_MIN_VIS, TABLE_CLEARANCE_M, ArmPosePipeline, MirrorPipeline, clearance_model,
+                          guard_clearance)
 from cta.pose import PoseTracker
 from cta.recorder import STATUS_CODES, STATUS_UNKNOWN, SessionRecorder, git_commit, next_take_name
 from cta.robot_io import FollowerArm, LeaderArm, clamp_margin, select_command
@@ -47,16 +48,18 @@ INFER_WIDTH = 1280  # the frame is downscaled once to this width and shared by t
 
 
 def next_command(mode: str, status: str, q: np.ndarray, q_leader: np.ndarray | None, prev: np.ndarray,
-                 dt: float, max_speed: float, q_foll: np.ndarray | None, contact) -> np.ndarray:
-    """The command to send this frame: speed limit, lead bound over the measured pose, then (camera-driven
-    mirror mode only) table clearance of the command itself - the per-joint ramp toward a clear target can
-    pass through poses that are not (review 2026-10-17). Paired teleop is not guarded: the leader may touch."""
+                 dt: float, max_speed: float, q_foll: np.ndarray | None, contact,
+                 margin: float = TABLE_CLEARANCE_M) -> tuple[np.ndarray, str | None]:
+    """The command to send this frame -> (q, clearance reason). Speed limit, lead bound over the measured
+    pose, then (camera-driven mirror mode only) table clearance of the command itself - the per-joint ramp
+    toward a clear target can pass through poses that are not (review 2026-10-17). Paired teleop is not
+    guarded: the leader may touch. reason: None, "froze" (some joints held back) or "held" (prev resent)."""
     q_new = select_command(mode, status, q, q_leader, prev, dt, max_speed)
     if q_foll is not None:
         q_new = np.clip(q_new, q_foll - MAX_LEAD_RAD, q_foll + MAX_LEAD_RAD)
     if contact is not None and mode == "mirror":
-        q_new = guard_clearance(q_new, prev, contact)
-    return q_new
+        return guard_clearance(q_new, prev, contact, margin=margin)
+    return q_new, None
 
 
 def _infer_frame(rgb: np.ndarray) -> np.ndarray:
@@ -139,6 +142,9 @@ def main(argv: list[str] | None = None) -> int:
                          "hand: the hand alone drives the gripper position (IK)")
     ap.add_argument("--pose-min-vis", type=float, default=POSE_MIN_VIS,
                     help=f"--control arm: min visibility/presence of the tracked arm + shoulders (default {POSE_MIN_VIS})")
+    ap.add_argument("--table-margin", type=float, default=TABLE_CLEARANCE_M,
+                    help=f"metres the arm must stay above the table, pipeline + sent commands (default "
+                         f"{TABLE_CLEARANCE_M}; +1 mm is added internally for the fast contact model)")
     ap.add_argument("--mode", choices=["mirror", "paired"], default="mirror",
                     help="mirror: camera drives the follower; paired: leader drives the follower, camera only logged")
     ap.add_argument("--max-speed-dps", type=float, default=90.0,
@@ -227,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         smoother = OneEuro(beta=args.smooth_beta)
         if args.control == "arm":
             pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
-                                   pose_min_vis=args.pose_min_vis)
+                                   pose_min_vis=args.pose_min_vis, table_margin=args.table_margin)
             contact = pipe.contact  # one MuJoCo contact model, shared with the send-path clearance check
         else:
             pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
@@ -236,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         prev = None
         last_meas = None
         stalled_frames = 0
+        guarded = False  # last frame's send was held/frozen by the table clearance guard
+        last_guard_warn = -1e9
         if follower is not None:
             prev = np.asarray(follower.read(), dtype=float)  # raw pose, unclamped: ramp into the margin
             if prev.shape != (6,) or not np.all(np.isfinite(prev)):
@@ -396,13 +404,20 @@ def main(argv: list[str] | None = None) -> int:
                     target = q_leader if args.mode == "paired" else (q if status in ("TRACKING", "COAST") else None)
                     moved = last_meas is not None and np.max(np.abs(q_foll - last_meas)) > STALL_MOVE_RAD
                     gap = 0.0 if target is None else float(np.max(np.abs(clamp_margin(target) - q_foll)))
-                    stalled_frames = stalled_frames + 1 if (gap > STALL_GAP_RAD and not moved) else 0
+                    # a clearance hold/freeze keeps the arm still on purpose: not a power problem
+                    stalling = gap > STALL_GAP_RAD and not moved and not guarded
+                    stalled_frames = stalled_frames + 1 if stalling else 0
                     last_meas = q_foll
                     if stalled_frames == STALL_FRAMES:
                         print("WARNING: arm is not moving toward its commands - check the follower's 12 V "
                               "motor power supply (motors only read on USB power)")
                 if not skip_send:
-                    q_new = next_command(args.mode, status, q, q_leader, prev, dt, max_speed, q_foll, contact)
+                    q_new, guard_why = next_command(args.mode, status, q, q_leader, prev, dt, max_speed, q_foll,
+                                                    contact, margin=args.table_margin)
+                    guarded = guard_why is not None
+                    if guarded and time.perf_counter() - last_guard_warn >= WARN_EVERY_S:
+                        last_guard_warn = time.perf_counter()
+                        print("holding: next step would go below the table margin — move your hand up")
                     try:
                         sent = follower.send(q_new)
                         prev = q_new
@@ -420,7 +435,9 @@ def main(argv: list[str] | None = None) -> int:
                         status=STATUS_CODES.get(status, STATUS_UNKNOWN),
                         smoother_on=int(pipe.smoother is not None),
                         pose_img=None if pose_obs is None else pose_obs.img,
-                        pose_world=None if pose_obs is None else pose_obs.world)
+                        pose_world=None if pose_obs is None else pose_obs.world,
+                        pose_vis=None if pose_obs is None else pose_obs.vis,
+                        pose_presence=None if pose_obs is None else pose_obs.presence)
             if bus_err is None:
                 consec_fail = 0
             else:

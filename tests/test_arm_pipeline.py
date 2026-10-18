@@ -7,7 +7,8 @@ from cta.config import READY_Q, SIM_LIMITS
 from cta.hands import HandObservation
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains
-from cta.pipeline import CLEARANCE_BODIES, COAST_S, TABLE_CLEARANCE_M, ArmPosePipeline, clear_table
+from cta.pipeline import (CLEARANCE_BODIES, CLEARANCE_PAD_M, COAST_S, TABLE_CLEARANCE_M, ArmPosePipeline,
+                          clear_table)
 from cta.pose import PoseObservation
 
 D = np.radians
@@ -39,7 +40,7 @@ def hand(po=None, **kw):
 def pose(az=0.0, elev=90.0, flex=60.0, side="left", mirrored=False):
     a = body_dir(az, elev)
     img, world = make_body(a, bend(a, flex), side=side, mirrored=mirrored)
-    po = PoseObservation(img, world, 0.9)
+    po = PoseObservation(img, world, 0.9, np.ones(33), np.ones(33))
     po.mirrored_input = mirrored  # test-only tag for hand()
     return po
 
@@ -295,4 +296,27 @@ def test_fast_clearance_model_matches_exact(contact):
     for _ in range(300):
         q = rng.uniform(SIM_LIMITS[:, 0], SIM_LIMITS[:, 1])
         err = fast.lowest_z(q) - contact.lowest_z(q)
-        assert 0.0 <= err < 2e-4  # never lower than exact; < 0.2 mm high
+        assert 0.0 <= err < CLEARANCE_PAD_M  # never lower than exact; optimism covered by the pad
+
+
+
+def test_pose_without_visibility_is_gated_out(kin, gains):
+    """Fail closed: an observation that carries no visibility/presence must not drive the arm."""
+    p = calibrated(kin, gains)
+    po = pose()
+    img, world = po.img, po.world
+    bare = PoseObservation(img, world, 0.9)
+    assert np.all(bare.vis == 0) and np.all(bare.presence == 0)
+    assert p.step(hand(po), 0.0, bare)[1] == "NO HAND"
+
+
+def test_table_margin_is_threaded_into_clear_table(kin, gains, contact):
+    big = 0.08
+    p = calibrated(kin, gains, table_margin=big)
+    assert p.table_margin == big
+    po = pose(az=0, elev=80, flex=70)
+    q, s = run(p, hand(po), po)
+    assert s == "TRACKING"
+    assert contact.lowest_z(q) >= contact.table_z + big + CLEARANCE_PAD_M - 1e-3
+    assert contact.lowest_z(clear_table(np.array([0.0, D(95), D(16), 0, 0, 0.5]), contact, big)) >= \
+        contact.table_z + big + CLEARANCE_PAD_M - 1e-3

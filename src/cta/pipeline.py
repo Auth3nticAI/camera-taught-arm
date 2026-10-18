@@ -20,12 +20,15 @@ GRIP_CLOSE_FRAC = 0.35
 GRIP_OPEN_FRAC = 0.55
 COAST_S = 0.15  # hand lost for less than this: report COAST (arm keeps moving to the last target)
 GRIP_STEP_RAD = 0.6  # per-frame gripper limit: full travel in ~4 frames, independent of the arm limit
-TABLE_CLEARANCE_M = 0.02  # lowest point of CLEARANCE_BODIES stays this far above the table
+TABLE_CLEARANCE_M = 0.005  # D-Q (Tray): lowest point of CLEARANCE_BODIES stays this far above the table
+# (0.5 cm lets the jaws reach a 1-inch block's middle); --table-margin overrides it
+CLEARANCE_PAD_M = 0.001   # added to every check: covers the fast contact model's optimism (below)
 # clearance checks the forearm and wrist too, not just the jaws (align.py's touch model stays jaws-only)
 CLEARANCE_BODIES = ("gripper", "moving_jaw_so101_v1", "wrist", "lower_arm")
 POSE_MIN_VIS = 0.5     # arm mode: tracked-arm + shoulder landmarks need min(visibility, presence) >= this
 HAND_ENGAGE_S = 1.0    # arm mode: the body drives the robot only if the hand was seen this recently
-CLEARANCE_DIRS = 500   # extreme-vertex directions: lowest_z ~0.1 ms, within 0.07 mm of exact (checked)
+CLEARANCE_DIRS = 500   # extreme-vertex directions: lowest_z ~0.1 ms; <= ~0.8 mm optimistic (reviewer
+                       # measured 0.755 mm), compensated by CLEARANCE_PAD_M (+1 mm)
 
 
 def clearance_model():
@@ -137,12 +140,17 @@ def _bisect_joint(q: np.ndarray, joint: int, safe: float, ok, iters: int) -> np.
     return out
 
 
-def _clears(q: np.ndarray, contact, clearance: float = TABLE_CLEARANCE_M) -> bool:
-    return contact.lowest_z(q) >= contact.table_z + clearance
+def _floor(contact, margin: float) -> float:
+    """Lowest allowed z: table + margin + CLEARANCE_PAD_M."""
+    return contact.table_z + margin + CLEARANCE_PAD_M
+
+
+def _clears(q: np.ndarray, contact, margin: float = TABLE_CLEARANCE_M) -> bool:
+    return contact.lowest_z(q) >= _floor(contact, margin)
 
 
 def clear_table(q: np.ndarray, contact, clearance: float = TABLE_CLEARANCE_M, iters: int = 14) -> np.ndarray | None:
-    """Keep the arm (CLEARANCE_BODIES meshes) at least `clearance` above the table; None if impossible.
+    """Keep the arm (CLEARANCE_BODIES meshes) `clearance` (+ CLEARANCE_PAD_M) above the table; None if impossible.
 
     Too low: move shoulder_lift toward 0 (raises the arm) by bisection, just far enough. If even lift 0
     is too low (elbow folded down with the upper arm vertical), unfold elbow_flex toward straight up
@@ -166,15 +174,15 @@ def clear_table(q: np.ndarray, contact, clearance: float = TABLE_CLEARANCE_M, it
 
 
 def guard_clearance(q_new: np.ndarray, prev: np.ndarray, contact,
-                    clearance: float = TABLE_CLEARANCE_M) -> np.ndarray:
-    """Last check on the command about to be SENT (after the speed limit and lead clip).
+                    margin: float = TABLE_CLEARANCE_M) -> tuple[np.ndarray, str | None]:
+    """Last check on the command about to be SENT (after the speed limit and lead clip) -> (q, reason).
 
-    Accepted: q_new clears the table, or is no lower than prev (so an arm that starts low can still rise).
-    Otherwise the moving joints that could lower the arm are frozen at prev - fewest first - and if no
-    combination is acceptable, prev is held."""
+    Accepted (reason None): q_new clears table + margin (+ pad), or is no lower than prev (so an arm that
+    starts low can still rise). Otherwise the moving joints that could lower the arm are frozen at prev -
+    fewest first - (reason "froze"), and if no combination is acceptable, prev is held (reason "held")."""
     q_new = np.asarray(q_new, dtype=float)
     prev = np.asarray(prev, dtype=float)
-    floor = contact.table_z + clearance
+    floor = _floor(contact, margin)
     z_prev = contact.lowest_z(prev)
 
     def accept(c):
@@ -182,15 +190,15 @@ def guard_clearance(q_new: np.ndarray, prev: np.ndarray, contact,
         return z >= floor or z >= z_prev - 1e-9
 
     if accept(q_new):
-        return q_new
+        return q_new, None
     moving = [j for j in range(1, 6) if q_new[j] != prev[j]]  # pan turns about z: never lowers the arm
-    for k in range(1, len(moving) + 1):
+    for k in range(1, len(moving)):  # freezing every moving joint is just prev: reported as "held" below
         for frozen in combinations(moving, k):
             c = q_new.copy()
             c[list(frozen)] = prev[list(frozen)]
             if accept(c):
-                return c
-    return prev.copy()
+                return c, "froze"
+    return prev.copy(), "held"
 
 
 class ArmPosePipeline(_PipelineBase):
@@ -202,13 +210,15 @@ class ArmPosePipeline(_PipelineBase):
       COAST / NO HAND. Hidden hips are fine (camera-up fallback).
     - Engagement: the body drives the arm only while the hand was seen within HAND_ENGAGE_S; then the
       wrist and gripper hold. Longer without the hand: NO HAND, everything holds.
-    - Every command keeps the arm TABLE_CLEARANCE_M above the table (else the previous command holds)."""
+    - Every command keeps the arm table_margin (+ CLEARANCE_PAD_M) above the table (else the previous
+      command holds)."""
 
     def __init__(self, kin: Kinematics, cal: Calibration | None, gains: MapGains,
                  smoother: OneEuro | None, max_step_rad: float = 0.15, aspect: float = 16 / 9,
                  mirrored: bool = False, want: str = "left", pose_min_vis: float = POSE_MIN_VIS,
-                 contact=None):
+                 contact=None, table_margin: float = TABLE_CLEARANCE_M):
         super().__init__(kin, cal, gains, smoother, max_step_rad, aspect)
+        self.table_margin = table_margin
         if contact is None:
             contact = clearance_model()
         self.contact = contact
@@ -303,13 +313,13 @@ class ArmPosePipeline(_PipelineBase):
             out[3:] = held  # exact hold (the arm smoother could otherwise drift the wrist)
         else:
             out[3] = self._wrist_for_final(out, pitch, prev[3])
-        cleared = clear_table(out, self.contact)
+        cleared = clear_table(out, self.contact, self.table_margin)
         for _ in range(4):  # clearance moved lift/elbow: re-solve the wrist for the world pitch, re-check
             if cleared is None or pitch is None or np.array_equal(cleared, out):
                 break
             out = cleared.copy()
             out[3] = self._wrist_for_final(out, pitch, prev[3])
-            cleared = clear_table(out, self.contact)
+            cleared = clear_table(out, self.contact, self.table_margin)
         if cleared is None:
             self.clearance_failures += 1
             if self.clearance_failures == 1:

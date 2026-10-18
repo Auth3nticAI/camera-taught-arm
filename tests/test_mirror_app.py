@@ -317,26 +317,28 @@ def test_control_hand_never_builds_pose_tracker(monkeypatch, tmp_path):
         assert np.all(np.abs(q - REST) <= STEP)
 
 
-def test_control_arm_drives_shoulder_and_elbow(monkeypatch, tmp_path):
-    from helpers import bend, body_dir, make_body
-
-    from helpers import make_hand
+def _arm_run(monkeypatch, tmp_path, extra, frames=120):
+    """--control arm (the default) with a raised left arm (az 30, elev 60, flex 40) and a hand on its wrist."""
+    from helpers import bend, body_dir, make_body, make_hand
 
     from cta.hands import HandObservation
     from cta.pose import PoseObservation
-    from cta.recorder import load_session
     a = body_dir(30, 60)
-    FakePose.obs = PoseObservation(*make_body(a, bend(a, 40)), 0.9)
+    FakePose.obs = PoseObservation(*make_body(a, bend(a, 40)), 0.9, np.ones(33), np.ones(33))
     FakeTracker.obs = HandObservation(*make_hand(wrist_uv=tuple(FakePose.obs.img[15, :2])), "left", 0.9)
     STATE["clock"] = 0.0
     STATE["deadband"] = 0.0  # the fake follower reaches each command, so the lead bound lets it move
     try:
-        rc = _run(monkeypatch, tmp_path, REST, None,
-                  ["--max-frames", "120", "--record", "arm", "--autostart-record", "--hand", "left", "--pose-min-vis", "0.5"],  # arm = default
-                  fail=lambda n: False, calib=_save_cal(tmp_path))
+        return _run(monkeypatch, tmp_path, REST, None, ["--max-frames", str(frames), "--hand", "left", *extra],
+                    fail=lambda n: False, calib=_save_cal(tmp_path))
     finally:
         FakePose.obs = FakeTracker.obs = None
         STATE["clock"] = STATE["deadband"] = None
+
+
+def test_control_arm_drives_shoulder_and_elbow(monkeypatch, tmp_path):
+    from cta.recorder import load_session
+    rc = _arm_run(monkeypatch, tmp_path, ["--record", "arm", "--autostart-record", "--pose-min-vis", "0.5"])
     assert rc == 0 and FakePose.constructed == 1
     last = FakeFollower.sent[-1]
     assert last[0] < REST[0] - 0.3          # pan swung toward -30 deg (user's arm to their left)
@@ -346,5 +348,37 @@ def test_control_arm_drives_shoulder_and_elbow(monkeypatch, tmp_path):
     assert np.isfinite(d["pose_world"]).all() and d["pose_img"].shape == (120, 33, 3)
     assert (d["status"] == 2).all()  # TRACKING: pose + hand
     assert d["pose_world"].dtype == np.float32
+    assert np.allclose(d["pose_vis"], 1.0) and np.allclose(d["pose_presence"], 1.0)
     meta = json.loads((tmp_path / "sessions" / "arm_01" / "meta.json").read_text())
     assert meta["control"] == "arm"
+
+
+
+def test_safe_clearance_hold_is_not_a_power_warning(monkeypatch, tmp_path, capsys):
+    """A clearance hold keeps the arm still on purpose: say so, and don't blame the 12 V supply."""
+    monkeypatch.setattr(mirror, "guard_clearance", lambda q_new, prev, contact, margin: (prev.copy(), "held"))
+    rc = _arm_run(monkeypatch, tmp_path, [], frames=150)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert np.allclose(FakeFollower.sent[-1], REST)  # every step held
+    assert "holding: next step would go below the table margin" in out
+    assert out.count("holding: next step would go below the table margin") <= 3  # rate-limited
+    assert "not moving" not in out
+
+
+def test_table_margin_flag_reaches_pipeline_and_send_path(monkeypatch, tmp_path):
+    seen = {"pipe": [], "send": []}
+    real_pipe, real_next = mirror.ArmPosePipeline, mirror.next_command
+
+    def pipe_spy(*a, **k):
+        seen["pipe"].append(k.get("table_margin"))
+        return real_pipe(*a, **k)
+
+    def next_spy(*a, **k):
+        seen["send"].append(k.get("margin"))
+        return real_next(*a, **k)
+
+    monkeypatch.setattr(mirror, "ArmPosePipeline", pipe_spy)
+    monkeypatch.setattr(mirror, "next_command", next_spy)
+    assert _arm_run(monkeypatch, tmp_path, ["--table-margin", "0.03"], frames=10) == 0
+    assert seen["pipe"] == [0.03] and set(seen["send"]) == {0.03}
