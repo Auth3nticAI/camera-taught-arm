@@ -50,6 +50,36 @@ class Kinematics:
         _, axis = self._site(q)
         return float(np.arctan2(axis[2], axis[0]))
 
+    def shoulder_anchor(self) -> np.ndarray:
+        """shoulder_lift joint anchor in the base frame (pan 0), straight from the MuJoCo model."""
+        self.fk(np.zeros(len(self._adr)))
+        d = self._d
+        rb = d.site_xmat[self._base].reshape(3, 3)
+        j = mujoco.mj_name2id(self._m, mujoco.mjtObj.mjOBJ_JOINT, "shoulder_lift")
+        return rb.T @ (d.xanchor[j] - d.site_xpos[self._base])
+
+    def max_reach(self) -> float:
+        """Max distance from shoulder_anchor() to the gripper site over the joint limits (fully extended).
+
+        At pan 0. shoulder_lift rotates about the anchor (distance unchanged) and pan turns the anchor with
+        the arm, so elbow_flex, wrist_flex and wrist_roll (the site sits slightly off the roll axis) are
+        searched: a coarse grid, then a fine grid around the best cell."""
+        if getattr(self, "_max_reach", None) is None:
+            sh = self.shoulder_anchor()
+            lims = SIM_LIMITS[2:5]
+
+            def best_in(axes):
+                return max((float(np.linalg.norm(self.fk(np.array([0, 0, e, w, r, 0]))[0] - sh)), (e, w, r))
+                           for e in axes[0] for w in axes[1] for r in axes[2])
+
+            coarse = (25, 25, 17)
+            dist, best = best_in([np.linspace(lo, hi, k) for (lo, hi), k in zip(lims, coarse)])
+            steps = [(hi - lo) / (k - 1) for (lo, hi), k in zip(lims, coarse)]
+            dist, _ = best_in([np.linspace(max(lo, b - s), min(hi, b + s), 11)
+                               for (lo, hi), b, s in zip(lims, best, steps)])
+            self._max_reach = dist
+        return self._max_reach
+
     def _pose_vec(self, q):
         p, pitch = self.fk(q)
         return np.concatenate([p, [_PITCH_WEIGHT * pitch]])

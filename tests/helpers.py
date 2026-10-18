@@ -83,7 +83,8 @@ def bend(upper: np.ndarray, flex_deg: float) -> np.ndarray:
 
 
 def make_body(upper: np.ndarray, fore: np.ndarray | None = None, side: str = "left",
-              mirrored: bool = False, aspect: float = 16 / 9) -> tuple[np.ndarray, np.ndarray]:
+              mirrored: bool = False, aspect: float = 16 / 9, upper_len: float = 0.28,
+              fore_len: float = 0.25) -> tuple[np.ndarray, np.ndarray]:
     """Synthetic pose -> (img (33,3) normalized, world (33,3) meters, hip-centred camera axes).
 
     The user faces the camera; shoulders 0.35 m apart, hips 0.5 m below. The `side` arm points along
@@ -99,8 +100,8 @@ def make_body(upper: np.ndarray, fore: np.ndarray | None = None, side: str = "le
     arms = {}
     for s, sh in (("left", B["l_sh"]), ("right", B["r_sh"])):
         a, b = (np.asarray(upper, float), np.asarray(fore, float)) if s == side else (down, down)
-        el = sh + 0.28 * a / np.linalg.norm(a)
-        arms[s] = (sh, el, el + 0.25 * b / np.linalg.norm(b))
+        el = sh + upper_len * a / np.linalg.norm(a)
+        arms[s] = (sh, el, el + fore_len * b / np.linalg.norm(b))
     body = np.zeros((33, 3))
     body[:11] = (B["l_sh"] + B["r_sh"]) / 2 + np.array([0.0, 0.0, 0.2])  # head
     body[11], body[13], body[15] = arms["left"]
