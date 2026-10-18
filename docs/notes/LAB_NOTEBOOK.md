@@ -60,3 +60,11 @@ Dated entries: what was tried, what broke, what was learned, numbers, and screen
 - **Bug fixed:** wrist roll thrashed because the roll difference didn't wrap at ±180°; a palm-facing-camera home pose sits right on that wrap point. Regression test added.
 - **Gripper redesign (D-N):** snap open/close with a 35%/55% dead-zone, calibrated to the user's own open hand (`c`) and pinch (`p`), and bypassing the arm smoother. The proportional version was laggy and inaccurate.
 - 93 tests passing.
+
+## 2026-10-17 (night) · Sim↔real alignment solved ✅
+- The "big shoulder/elbow mismatch" was **not real**. The wrist camera (innomaker, index 2, mounted on the gripper) showed the arm held *level in the air* in the "stretched" captures, which matches the motor readings exactly. To touch the table, the wrist must bend down 60–90°. Reference touch poses are rendered in `docs/assets/alignment-touch-poses.png`.
+- **12 table-touch captures.** One outlier (#1, 19 mm off) was dropped.
+- **Result:** shoulder_lift **+9.8°**, elbow **+4.2°**, wrist_flex **+2.1°**; uncertainty ≤ 1.3°; contact error **47 mm → 3.2 mm**.
+  - The shoulder offset (~10°) is the hand-set calibration "middle" pose being off vertical.
+  - Saved to `cta-data/sim_real_map.json`.
+- **Deck line:** "Calibrated by touching the table 11 times: least-squares cut the sim-to-real contact error from 47 mm to 3 mm."
