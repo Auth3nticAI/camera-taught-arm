@@ -56,3 +56,13 @@
 - **ArmLength** median ignores a single bent-arm frame.
 - **ReachPipeline:** engagement, visibility gating, COAST/NO HAND, the snap gripper, no-hand default pitch, smoothing on target.
 - **App:** `--control reach` runs with fakes; the existing modes are unchanged; all existing tests stay green.
+
+## As built (2026-10-18)
+
+- **Measured from the MuJoCo model** (`Kinematics.shoulder_anchor()` / `max_reach()`, checked in `tests/test_reach.py`):
+  - `ROBOT_SHOULDER` = (0.0692, −0.0183, 0.1166) m, the shoulder_lift anchor at pan 0.
+  - Max reach = 0.4113 m. This search includes wrist_roll, because the gripper site sits slightly off the roll axis. So `ROBOT_REACH` = 0.95 × 0.4113 = 0.391 m.
+- **Box:** the MapGains box (`from_kinematics`), with its z floor replaced by `table_z + table_margin + 1 mm pad` (−0.0024 + 0.005 + 0.001 ≈ 3.6 mm). The box's lower x bound (~0.22 m) means "arm folded in" stops about 22 cm in front of the base. `clear_table` then guarantees the meshes.
+- **No-hand pitch:** a brief hand dropout (≤ `COAST_S`, 0.15 s) keeps the last hand pitch, and only a longer absence (still within the 1 s engagement window) moves to ~45° down. Reason: MediaPipe hand flicker would otherwise swing the wrist every other frame. Without calibration the status is UNCALIBRATED (READY pose), as in every mode.
+- **Smoothing:** the arm smoother runs on the 3-D target. The hand pitch has its own companion One Euro filter, shared with arm mode; roll is not smoothed.
+- **Shared code:** `_BodyPipeline` (side choice, visibility gating, engagement, pitch filter, clearance hold) is the base of both `ArmPosePipeline` and `ReachPipeline`.
