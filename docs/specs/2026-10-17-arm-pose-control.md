@@ -17,6 +17,7 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
   - Indices: shoulders 11 (L) / 12 (R), elbows 13 / 14, wrists 15 / 16, hips 23 / 24.
 - **Hand tracker:** the existing `HandTracker` and `compute_features`, unchanged.
 - *Review fix (2026-10-17):* the frame is resized once to 1280 px wide and shared by both trackers. Pose then runs at 640 px, since its nets take 224/256 px input.
+- *Round 2:* `PoseObservation.vis`/`presence` **default to 0**, so gating fails closed when a caller omits them. The recorder stores `pose_vis` and `pose_presence` (N,33) as float32, NaN when absent.
 - *Review fix:* **visibility gating.** `PoseObservation` carries per-landmark `vis` (33,) and `presence` (33,). A frame counts as **no pose** (COAST, then NO HAND) when min(vis, presence) of the tracked arm's shoulder, elbow or wrist, or of either shoulder, is below `POSE_MIN_VIS = 0.5` (`--pose-min-vis`). Guessed landmarks must not drive the arm.
 - **Hidden hips** (e.g. seated at a desk) don't drop the frame. `up` falls back to camera up (−y), made perpendicular to the shoulder line.
 
@@ -69,6 +70,8 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
 ## Safety (in addition to everything that already applies)
 
 1. **Table clearance:** after computing q, if the lowest gripper/jaw point (`cta.align.ContactModel.lowest_z`) is below `table_z + 0.02` m, move shoulder_lift toward 0 (raise the arm) by bisection until it's at least 0.02 m above. Unit-test it.
+   - **Margin (D-Q, Tray, 2026-10-18): 0.5 cm, not 2 cm**, so the jaws can reach the middle of a 1-inch block. It is set with `--table-margin` (metres, default 0.005), and the one value is used by both `clear_table` (pipeline) and `guard_clearance` (sent command).
+   - Every check adds `CLEARANCE_PAD_M = 1 mm`, because the fast extreme-vertex contact model is optimistic by up to ~0.8 mm (the reviewer measured 0.755 mm). The effective floor is table + 6 mm at the default.
    - *Added 2026-10-17:* lift 0 alone does not always clear (e.g. lift 0, elbow +40°, wrist +60°: jaws 2 cm below the table). Then lift is set to 0 and elbow_flex is bisected toward straight-up (−73.8°), which always clears. Applied to the final command each frame (after the rate limit), so it can exceed the per-frame step on lift/elbow, always in the raising direction.
 2. The same pipeline rate limit, smoother (arm joints only), joint-limit clip, COAST (< 0.15 s) and NO HAND hold semantics as `MirrorPipeline`. **No pose = NO HAND / COAST.** Hand missing but pose present: shoulder and elbow still follow, while wrist and gripper hold their last values (status `TRACKING`).
    - *Review fix: **engagement rule.*** A body-only frame (pose present, hand missing) counts as TRACKING only if the hand was seen within the last `HAND_ENGAGE_S = 1.0` s. Otherwise the status is `NO HAND` and everything holds: showing your hand means you are engaged. A body alone never starts tracking.
@@ -77,9 +80,12 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
    - `next_command` = `select_command` → lead clip → `guard_clearance` (camera-driven `--mode mirror`, both `--control` modes).
    - A command is accepted if it clears, or if it is no lower than the previous one (so an arm resting low can rise). Otherwise the moving lift/elbow/wrist/roll/gripper joints are frozen at their previous values, fewest first; if nothing passes, the previous command holds.
    - Paired teleop is not guarded, because the leader may touch the table.
-   - Known limit: some transitions stall safely partway (example above: the arm stops at about (51°, −37°, 27°)) instead of finding a path around.
+   - Known limit: some transitions stall safely partway instead of finding a path around. In the example above, with the 0.5 cm margin, the arm stops at about (51°, −35.5°, 31.5°).
+   - `next_command`/`guard_clearance` return the reason: `None`, `"froze"` (some joints held back) or `"held"` (previous command resent).
+   - When the guard holds or freezes joints, the app prints a rate-limited message: "holding: next step would go below the table margin — move your hand up".
+   - Those frames don't count toward the 12 V "arm is not moving" warning.
 4. *Review fixes:*
-   - Clearance checks the **gripper, moving jaw, wrist and lower_arm** meshes (`CLEARANCE_BODIES`); align.py's touch model is unchanged. The meshes are reduced to their extreme vertices along 500 directions, so a check takes about 0.1 ms and is within 0.07 mm of exact.
+   - Clearance checks the **gripper, moving jaw, wrist and lower_arm** meshes (`CLEARANCE_BODIES`); align.py's touch model is unchanged. The meshes are reduced to their extreme vertices along 500 directions, so a check takes about 0.1 ms. It is ≤ ~0.8 mm optimistic (the reviewer measured 0.755 mm; an earlier claim of 0.07 mm came from too few samples), which the +1 mm pad covers.
    - If `clear_table` can't find a clear pose (even after lift 0 and straightening the elbow), the previous command holds and a warning is logged once (`clearance_failures` counts them).
    - The wrist solve picks the solution nearest the previous wrist command before clipping, so it doesn't flip end to end at the ±180° wrap.
    - The wrist is re-solved on the final lift/elbow (after the smoother, rate limit and clearance), rate-limited, so world pitch doesn't drift. The hand pitch gets a companion One Euro filter whenever the arm smoother is on.
