@@ -1,7 +1,7 @@
 """MediaPipe Tasks PoseLandmarker wrapper (one body, VIDEO mode)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -17,10 +17,12 @@ class PoseObservation:
     img: np.ndarray    # (33, 3) normalized image coords (in the camera's own, possibly mirrored, image)
     world: np.ndarray  # (33, 3) meters, hip-centred, camera axes: x right, y down, z away
     score: float       # mean visibility of the shoulder/elbow/wrist landmarks
+    vis: np.ndarray = field(default_factory=lambda: np.ones(33))       # (33,) per-landmark visibility 0..1
+    presence: np.ndarray = field(default_factory=lambda: np.ones(33))  # (33,) per-landmark presence 0..1
 
 
 class PoseTracker:
-    def __init__(self, model_path: Path, infer_width: int = 1280):
+    def __init__(self, model_path: Path, infer_width: int = 640):  # the nets themselves run at 224/256 px
         self.infer_width = infer_width
         self._last_ms = -1
         opts = vision.PoseLandmarkerOptions(
@@ -43,11 +45,13 @@ class PoseTracker:
         if not res.pose_landmarks or not res.pose_world_landmarks:
             return None
         lm, wl = res.pose_landmarks[0], res.pose_world_landmarks[0]
-        vis = [lm[i].visibility for i in _ARM_LANDMARKS]
+        vis = np.array([1.0 if p.visibility is None else p.visibility for p in lm], dtype=np.float64)
+        pres = np.array([1.0 if p.presence is None else p.presence for p in lm], dtype=np.float64)
         return PoseObservation(
             img=np.array([[p.x, p.y, p.z] for p in lm], dtype=np.float64),
             world=np.array([[p.x, p.y, p.z] for p in wl], dtype=np.float64),
-            score=float(np.mean([v for v in vis if v is not None])) if any(v is not None for v in vis) else 0.0,
+            score=float(vis[list(_ARM_LANDMARKS)].mean()),
+            vis=vis, presence=pres,
         )
 
     def close(self) -> None:

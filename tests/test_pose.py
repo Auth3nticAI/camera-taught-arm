@@ -23,3 +23,11 @@ def test_pose_observation_shapes():
     from cta.pose import PoseObservation
     o = PoseObservation(np.zeros((33, 3)), np.zeros((33, 3)), 0.5)
     assert o.img.shape == (33, 3) and o.world.shape == (33, 3) and o.score == 0.5
+    assert o.vis.shape == (33,) and o.presence.shape == (33,) and np.all(o.vis == 1.0)  # default: trusted
+
+
+def test_pose_tracker_default_infer_width_is_640():
+    import inspect
+
+    from cta.pose import PoseTracker
+    assert inspect.signature(PoseTracker).parameters["infer_width"].default == 640
