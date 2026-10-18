@@ -1,6 +1,7 @@
 """Hand / arm-pose / reach observation -> joint command pipelines (hold-last on loss, rate-limited)."""
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -13,7 +14,9 @@ from cta.filters import OneEuro
 from cta.hands import HandObservation
 from cta.kinematics import Kinematics
 from cta.mapping import Calibration, MapGains, calibrate, map_to_target, set_pinch_closed
-from cta.reach import NO_HAND_PITCH_RAD, REACH_FRACTION, ArmLength, reach_target, reach_vector
+from cta.depth import PATCH_RADIUS_FRAC, sample_patch
+from cta.reach import (NO_HAND_PITCH_RAD, REACH_FRACTION, WindowMedian, fwd_from_depth, fwd_from_hand_scale,
+                       palm_centre, plane_reach, reach_target, shoulder_sep)
 from cta.robot_io import clamp_margin
 
 # Snap gripper (Tray's decision 2026-10-17): pinch fraction below CLOSE -> closed, above OPEN -> open,
@@ -30,6 +33,9 @@ CLEARANCE_BODIES = ("gripper", "moving_jaw_so101_v1", "wrist", "lower_arm")
 CART_CLEAR_TOL_M = 0.001  # reach mode: Cartesian clearance lands within 1 mm above the floor
 POSE_MIN_VIS = 0.5     # arm mode: tracked-arm + shoulder landmarks need min(visibility, presence) >= this
 HAND_ENGAGE_S = 1.0    # arm mode: the body drives the robot only if the hand was seen this recently
+TARGET_SPEED_MPS = 0.25  # reach (relative mapping): the smoothed 3-D target moves at most this fast
+DEPTH_MEDIAN_FRAMES = 3  # reach: median over the last N hand-shoulder depth differences (measurement denoise)
+HAND_POINT = "wrist"     # reach: hand tracker point for "where" ("wrist" = lm 0, "palm" = mean of 0,5,9,13,17)
 CLEARANCE_DIRS = 500   # extreme-vertex directions: lowest_z ~0.1 ms; <= ~0.8 mm optimistic (reviewer
                        # measured 0.755 mm), compensated by CLEARANCE_PAD_M (+1 mm)
 
@@ -392,40 +398,39 @@ class ArmPosePipeline(_BodyPipeline):
 class ReachPipeline(_BodyPipeline):
     """--control reach (default, Tray 2026-10-18): the user's arm is the WHERE, the hand the WHAT.
 
-    Shoulder->wrist reach / the user's arm length = n (|n| <= 1); gripper target = robot shoulder + robot
-    reach * n, clipped to the workspace box (z floor = table + margin + pad). The arm smoother runs on that
-    3-D target, then Kinematics.ik picks the robot's own joints (rate limit + joint clip on its output).
+    WHERE (spec 2026-10-18-reach-measurement-fix): the arm is locked at calibration ('c': the Pose side whose
+    wrist is nearest the hand tracker's wrist) and never re-picked until the next 'c'. n = (fwd, left, up):
+    left/up = hand tracker hand point - locked Pose shoulder (image), in arm lengths (ARM_PER_SHOULDER x the
+    median image shoulder separation); fwd = metric depth (hand - shoulder) / (ARM_PER_SHOULDER x Pose world
+    shoulder width), or the hand-scale cue (fwd_source="scale", e.g. no depth model). Pose wrist/elbow
+    landmarks are not used. Target = p0 + ROBOT_REACH (n - n_home) (home_relative, the CLI default) or
+    ROBOT_SHOULDER + ROBOT_REACH n, clipped to the workspace box (z floor = table + margin + pad). The arm
+    smoother runs on that 3-D target, then Kinematics.ik picks the robot's own joints.
     Hand: claw pitch (calibrated, as in hand mode), wrapped roll, snap gripper.
-    A missing or inconsistent wrist holds all joints until stable reacquisition."""
+    No hand, no pose, the locked/other shoulder guessed (< pose_min_vis) or the shoulders collapsing /
+    teleporting: COAST / NO HAND (everything holds)."""
 
     def __init__(self, kin: Kinematics, cal: Calibration | None, gains: MapGains,
                  smoother: OneEuro | None, max_step_rad: float = 0.15, aspect: float = 16 / 9,
                  mirrored: bool = False, want: str = "left", pose_min_vis: float = POSE_MIN_VIS,
-                 contact=None, table_margin: float = TABLE_CLEARANCE_M, home_relative: bool = False):
+                 contact=None, table_margin: float = TABLE_CLEARANCE_M, home_relative: bool = False,
+                 hand_point: str = HAND_POINT, fwd_source: str = "depth"):
         super().__init__(kin, cal, gains, smoother, max_step_rad, aspect, mirrored, want, pose_min_vis,
                          contact, table_margin)
+        if hand_point not in ("wrist", "palm") or fwd_source not in ("depth", "scale"):
+            raise ValueError(f"bad hand_point={hand_point!r} / fwd_source={fwd_source!r}")
         self.robot_shoulder = kin.shoulder_anchor()
         self.robot_reach = REACH_FRACTION * kin.max_reach()
         # The CLI selects home-relative mapping; absolute mapping remains available for old experiments.
         self.home_relative = home_relative
-        self.reach_home_n: np.ndarray | None = None
+        self.hand_point = hand_point
+        self.fwd_source = fwd_source
         self.box_min = np.array(gains.box_min, dtype=float)
         self.box_max = np.array(gains.box_max, dtype=float)
         self.box_min[2] = self.contact.table_z + table_margin + CLEARANCE_PAD_M
-        self.arm_length = ArmLength()
         self.tracking_hold_reason: str | None = None
-        self._shoulders_ref: np.ndarray | None = None
-        self._shoulder_span: float | None = None
-        self._reach_accepted_t: float | None = None
         self._reach_sample_t: float | None = None
-        self._recovering = False
-        self._candidate_n: np.ndarray | None = None
-        self._candidate_shoulders: np.ndarray | None = None
-        self._candidate_count = 0
-        self._candidate_t: float | None = None
-        self._held_target: np.ndarray | None = None
-        self.last_n: np.ndarray | None = None
-        self.raw_target: np.ndarray | None = None
+        self._reset_measurement()
         self.target: np.ndarray | None = None
         self.pitch_target = NO_HAND_PITCH_RAD
         self.ik_target: np.ndarray | None = None  # target after the Cartesian clearance raise
@@ -503,127 +508,169 @@ class ReachPipeline(_BodyPipeline):
                 lo = mid[2]
         return q_hi, best_t
 
-    def calibrate(self, obs: HandObservation) -> None:
-        super().calibrate(obs)
-        # Reframing deliberately requires calibration; never inherit a corrupted body reference.
+    def _reset_measurement(self) -> None:
+        """Everything 'c' re-measures: the locked arm, the home, the medians, the depth reference."""
         self.side = None
-        self._shoulders_ref = None
-        self._shoulder_span = None
-        self._reach_accepted_t = None
-        self._reach_sample_t = None
-        self._recovering = False
-        self._candidate_n = None
-        self._candidate_count = 0
-        self._candidate_t = None
-        self._held_target = None
-        self.arm_length = ArmLength()
-        self.last_n = None
-        self.reach_home_n = None
+        self.locked_side: str | None = None
+        self.reach_home_n: np.ndarray | None = None
+        self.last_n: np.ndarray | None = None
+        self.raw_target: np.ndarray | None = None
+        self.reach_line_uv: np.ndarray | None = None   # (2, 2): locked shoulder -> hand point (dashboard)
+        self.depth_hand = float("nan")                  # metres, this frame's hand patch (recorder)
+        self.depth_shoulder = float("nan")              # metres, the shoulder depth used (recorder)
+        self._sep = WindowMedian()        # image shoulder separation (height units)
+        self._width_m = WindowMedian()    # Pose world shoulder width (m)
+        self._sh_depth = WindowMedian()   # shoulder patch depth (m)
+        self._d: float | None = None      # depth_hand - depth_shoulder, short median (held between depth frames)
+        self._d_buf: deque[float] = deque(maxlen=DEPTH_MEDIAN_FRAMES)
+        self._d_home: float | None = None
+        self._ratio_home: float | None = None  # hand-scale fallback: (hand scale / sep) at home
+        self._sep_home: float | None = None
+        self._shoulder_span: float | None = None
+        self._prev_shoulders: np.ndarray | None = None
+        self._prev_shoulders_t: float | None = None
+
+    def calibrate(self, obs: HandObservation, pose_obs=None) -> None:
+        """'c': hand calibration + lock the arm (now if the body is visible, else on the next frame with
+        both); the home is recorded on the first tracked frame after this (same frame in the app)."""
+        super().calibrate(obs)
+        self._reset_measurement()
         self.tracking_hold_reason = None
+        self._try_lock(obs, pose_obs)
 
-    def _tracking_glitch(self, pose_obs, side: str, n: np.ndarray, t: float) -> str | None:
-        """Confidence alone cannot detect confident hallucinations in a cropped body.
+    def _try_lock(self, obs: HandObservation | None, pose_obs) -> None:
+        if self.locked_side is not None or obs is None or pose_obs is None:
+            return
+        if not np.all(np.isfinite(np.asarray(pose_obs.img)[[11, 12, 13, 14, 15, 16], :2])):
+            return
+        self.locked_side = choose_arm_side(pose_obs.img, obs.lm_img[0, :2], None, self.want, self.mirrored)
+        self.side = self.locked_side
 
-        Tolerances are conservative initial choices, verified against recorded failure patterns;
-        they are not a learned detector. Hold, then return to view or recalibrate deliberately.
-        """
-        shoulders = np.asarray(pose_obs.img[[11, 12], :2])
-        span = float(np.linalg.norm(shoulders[0] - shoulders[1]))
-        if np.any(shoulders < 0.02) or np.any(shoulders > 0.98):
-            return 'shoulders outside camera view'
-        if span < 0.06 or (self._shoulder_span is not None and
-                          not 0.5 * self._shoulder_span <= span <= 2.0 * self._shoulder_span):
-            return 'shoulder span collapsed or changed'
-        if self.side is not None and side != self.side:
-            return 'arm identity changed'
-        if self._reach_accepted_t is not None:
-            dt = max(0.0, t - self._reach_accepted_t)
-            displacement = np.linalg.norm(shoulders - self._shoulders_ref, axis=1).max()
-            if displacement > 0.08 + 0.8 * min(dt, 0.1):
-                return 'shoulders jumped'
-            if not self._recovering and np.linalg.norm(n - self.last_n) > 0.25 + 3.0 * min(dt, 0.1):
-                return '3D reach jumped'
-        return None
-
-    def _hold_reach(self, reason: str, t: float) -> tuple[np.ndarray, str]:
-        if not self._recovering:
-            self._held_target = self.target.copy() if self.target is not None else self.kin.fk(self.q_cmd)[0].copy()
-        self._recovering = True
-        self._candidate_n = None
-        self._candidate_count = 0
+    def _hold(self, reason: str, t: float) -> tuple[np.ndarray, str]:
         self.tracking_hold_reason = reason
         return self._lost(t)
 
-    def step(self, obs: HandObservation | None, t: float, pose_obs=None) -> tuple[np.ndarray, str]:
+    def _shoulder_glitch(self, pose_obs, t: float) -> str | None:
+        """Confidence alone can't catch confident hallucinations (visibility reads ~1.0 throughout the
+        recordings). Shoulders out of view, a collapsed/changed span or a frame-to-frame teleport -> hold.
+        The teleport allowance grows with the time since the last good shoulders, so a body that moved
+        while the hand was away is re-accepted instead of holding forever."""
+        shoulders = np.asarray(pose_obs.img[[11, 12], :2], dtype=float)
+        span = float(np.linalg.norm(shoulders[0] - shoulders[1]))
+        if np.any(shoulders < 0.02) or np.any(shoulders > 0.98):
+            return "shoulders outside camera view"
+        if span < 0.06 or (self._shoulder_span is not None and
+                           not 0.5 * self._shoulder_span <= span <= 2.0 * self._shoulder_span):
+            return "shoulder span collapsed or changed"
+        if self._prev_shoulders is not None:
+            dt = max(0.0, t - self._prev_shoulders_t)
+            if np.linalg.norm(shoulders - self._prev_shoulders, axis=1).max() > 0.08 + 0.8 * dt:
+                return "shoulders jumped"
+        self._prev_shoulders, self._prev_shoulders_t = shoulders, t
+        return None
+
+    def _forward(self, f: HandFeatures, obs_lm: np.ndarray, sh_uv: np.ndarray, sep: float,
+                 depth_map: np.ndarray | None, t: float) -> tuple[float, float]:
+        """(n_fwd relative to home, n_fwd absolute). Depth: d = palm-centre patch depth - shoulder depth,
+        median of the last DEPTH_MEDIAN_FRAMES samples (monocular depth flickers ~3-5 cm frame to frame at
+        the hand; the in-plane hand tracker ~0.1 cm), held between depth frames; the shoulder depth is a
+        0.5 s median, not sampled while the hand covers the shoulder.
+        Scale fallback: relative only (absolute = relative)."""
+        if self.fwd_source == "scale":
+            ratio = f.scale * self.aspect / sep
+            if self._ratio_home is None:
+                self._ratio_home, self._sep_home = ratio, sep
+            n = fwd_from_hand_scale(ratio / self._ratio_home, self._sep_home)
+            return n, n
+        if depth_map is not None:
+            palm = palm_centre(obs_lm)  # depth always at the palm centre: the wrist point sits on the hand's
+            dh = sample_patch(depth_map, palm)  # edge and its patch hits the background (replay: 0.9-1.4 m p99)
+            gap = np.hypot((palm[0] - sh_uv[0]) * self.aspect, palm[1] - sh_uv[1])
+            if gap > 2.0 * f.scale * self.aspect + 2 * PATCH_RADIUS_FRAC:  # hand not over the shoulder
+                self._sh_depth.update(sample_patch(depth_map, sh_uv), t)
+            ds = self._sh_depth.value
+            if np.isfinite(dh) and np.isfinite(ds):
+                self._d_buf.append(dh - ds)
+                self._d = float(np.median(self._d_buf))
+                self.depth_hand = dh
+        self.depth_shoulder = self._sh_depth.value
+        width = self._width_m.value
+        if self._d is None or not np.isfinite(width) or width <= 0:
+            return 0.0, 0.0  # no depth yet: forward stays at home
+        if self._d_home is None:
+            self._d_home = self._d
+        return fwd_from_depth(self._d, self._d_home, width), fwd_from_depth(self._d, 0.0, width)
+
+    def step(self, obs: HandObservation | None, t: float, pose_obs=None,
+             depth_map: np.ndarray | None = None) -> tuple[np.ndarray, str]:
+        """depth_map: metric depth (any resolution, same framing as the image) for this frame, or None
+        (no depth model, or a skipped depth frame: the last hand-shoulder depth is held)."""
         self.tracking_hold_reason = None
+        self.reach_line_uv = None
+        self.depth_hand = float("nan")
+        self.last_features = None
         sample_dt = 1 / 60 if self._reach_sample_t is None else max(0.0, min(t - self._reach_sample_t, 0.05))
         self._reach_sample_t = t
+        f = self._features(obs) if obs is not None else None
         if self.cal is None:
-            self.last_features = self._features(obs) if obs is not None else None
-            return READY_Q.astype(float).copy(), 'UNCALIBRATED'
+            self.last_features = f
+            return READY_Q.astype(float).copy(), "UNCALIBRATED"
         if obs is None:
-            return self._hold_reach('wrist not visible', t)
-        early, g = self._gate(obs, t, pose_obs)
-        if early is not None:
-            if self.cal is not None:
-                return self._hold_reach('arm pose not reliable', t)
-            return early
-        if g.hand is None:
-            return self._hold_reach('wrist orientation not reliable', t)
-        wrist = side_indices(g.side, self.mirrored)[2]
-        if np.linalg.norm(pose_obs.img[wrist, :2] - obs.lm_img[0, :2]) > 0.12:
-            return self._hold_reach('wrist disagrees with arm tracker', t)
-        r, length_frame = reach_vector(pose_obs.world, g.side, self.mirrored, g.hips_ok)
-        length = self.arm_length.update(length_frame)
-        if not (np.all(np.isfinite(r)) and np.isfinite(length) and length > 0):
-            return self._lost(t)
-        n = r / length
-        if np.linalg.norm(n) > 1.0:
-            n = n / np.linalg.norm(n)
-        reason = self._tracking_glitch(pose_obs, g.side, n, t)
+            return self._lost(t)  # the hand tracker IS the "where": no hand, no target (hold)
+        if pose_obs is None or not np.all(np.isfinite(np.asarray(pose_obs.img)[[11, 12], :2])):
+            return self._hold("no body (shoulders) in view", t)
+        self._try_lock(obs, pose_obs)
+        if self.locked_side is None:
+            return self._hold("arm not locked yet", t)
+        conf = np.minimum(np.asarray(pose_obs.vis, float), np.asarray(pose_obs.presence, float))
+        sh_i = side_indices(self.locked_side, self.mirrored)[0]
+        if not np.all(conf[[11, 12]] >= self.pose_min_vis):  # locked shoulder (and the scale's other one)
+            return self._hold("shoulder not visible", t)
+        hand = map_to_target(f, self.cal, self.gains)
+        if not np.all(np.isfinite(hand[1:])):
+            return self._hold("hand orientation not reliable", t)
+        reason = self._shoulder_glitch(pose_obs, t)
         if reason is not None:
-            return self._hold_reach(reason, t)
-        if self._recovering:
-            shoulders = np.asarray(pose_obs.img[[11, 12], :2])
-            consistent = (self._candidate_n is not None and t - self._candidate_t <= 0.2 and
-                          np.linalg.norm(n - self._candidate_n) <= 0.12 and
-                          np.linalg.norm(shoulders - self._candidate_shoulders, axis=1).max() <= 0.04)
-            self._candidate_count = self._candidate_count + 1 if consistent else 1
-            self._candidate_n, self._candidate_shoulders, self._candidate_t = n.copy(), shoulders.copy(), t
-            if self._candidate_count < 3:
-                self.tracking_hold_reason = 'waiting for stable wrist and arm'
-                return self._lost(t)
-            if self.home_relative and self.reach_home_n is not None:
-                # Clutch on recovery: a newly observed hand position must not move the held robot.
-                self.reach_home_n = n - (self._held_target - self.cal.p0) / self.robot_reach
-                if self.smoother is not None:
-                    self.smoother.reset()
-                    self.smoother(self._held_target, t)
-            self._recovering = False
-        self._accept(g, t)
-        self._shoulders_ref = np.array(pose_obs.img[[11, 12], :2], copy=True)
+            return self._hold(reason, t)
+
+        img = np.asarray(pose_obs.img, dtype=float)
+        sh_uv = img[sh_i, :2]
+        hand_uv = palm_centre(obs.lm_img) if self.hand_point == "palm" else np.asarray(obs.lm_img[0, :2], float)
+        sep = self._sep.update(shoulder_sep(img, self.aspect), t)
+        w = np.asarray(pose_obs.world, dtype=float)
+        self._width_m.update(float(np.linalg.norm(w[11] - w[12])), t)
+        n_left, n_up = plane_reach(hand_uv, sh_uv, sep, self.aspect, self.mirrored)
+        fwd_rel, fwd_abs = self._forward(f, obs.lm_img, sh_uv, sep, depth_map, t)
+        if not np.all(np.isfinite([n_left, n_up, fwd_rel, fwd_abs])):
+            return self._hold("reach not measurable", t)
+
+        self.side = self.locked_side
+        self._last_seen_t = t
+        self.last_features = f
         if self._shoulder_span is None:
-            self._shoulder_span = float(np.linalg.norm(self._shoulders_ref[0] - self._shoulders_ref[1]))
-        self._reach_accepted_t = t
-        self.last_n = n
+            self._shoulder_span = float(np.linalg.norm(img[11, :2] - img[12, :2]))
+        self.reach_line_uv = np.array([sh_uv, hand_uv])
         if self.home_relative:
+            n = np.array([fwd_rel, n_left, n_up])
             if self.reach_home_n is None:
                 self.reach_home_n = n.copy()
             self.raw_target = np.clip(self.cal.p0 + self.robot_reach * (n - self.reach_home_n),
                                       self.box_min, self.box_max)
         else:
+            n = np.array([fwd_abs, n_left, n_up])
             self.raw_target = reach_target(n, self.robot_shoulder, self.robot_reach, self.box_min, self.box_max)
+        self.last_n = n
         target = self.raw_target
         if self.smoother is not None:  # smooth in space (the target), not the joints
             target = np.clip(np.asarray(self.smoother(target, t), dtype=float), self.box_min, self.box_max)
-        if self.home_relative and self.target is not None:
+        if self.home_relative and self.target is not None:  # target speed limit (TARGET_SPEED_MPS)
             delta = target - self.target
             distance = float(np.linalg.norm(delta))
             if distance > 0:
-                target = self.target + delta * min(1.0, 0.25 * sample_dt / distance)
+                target = self.target + delta * min(1.0, TARGET_SPEED_MPS * sample_dt / distance)
         self.target = target
         prev = self.q_cmd.copy()
-        _, pitch, roll, grip = g.hand
+        _, pitch, roll, grip = hand
         self._hand_pitch = self._smooth_pitch(pitch, t)
         self.pitch_target = self._hand_pitch
         self.roll_target = self._smooth_roll(roll, t)
