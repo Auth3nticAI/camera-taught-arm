@@ -57,3 +57,13 @@
 - **Fallback:** `fwd_from_hand_scale`, pinhole with an assumed focal length of 1.2 image heights. It is far noisier than depth on the recordings (rotation foreshortens the 2-D hand scale).
 - **Removed** (made obsolete by the lock / hand-tracker "where"): arm-identity hold, wrist-disagreement hold, 3-D reach jump hold, 3-frame reacquisition, clutch rebase on recovery, `reach_vector` / `ArmLength`. **Kept:** shoulder out of view / span / teleport checks (teleport allowance 0.08 + 0.8 * dt since the last good shoulders, uncapped, so it can't hold forever), the 0.25 m/s target speed limit, the 90 deg/s joint bound, clearance, and all app guards.
 - **Proof:** see LAB_NOTEBOOK 2026-10-18 "Reach measurement fix". Acceptance is met at the final target, but the speed limit guarantees that for OLD and NEW alike. Before the speed limit, NEW misses p99 <= 1.5 / max <= 4 cm (residual: depth drift on the forward axis, and real fast motion at 24 fps).
+- **Review round (same day):**
+  - The forward home is the median of >= 0.5 s of valid samples after `c`; forward is held at 0 until then.
+  - d outside −1.0..+0.3 m is rejected.
+  - Shoulder depth older than 1 s holds forward.
+  - The d median restarts after a gap longer than COAST_S.
+  - The hand-scale home is a median too.
+  - `FWD_GAIN = 0.3` (relative mapping; `--fwd-gain`), chosen from the replay sweep: the largest gain with ≤ 10 % x-box saturation in every take.
+  - A depth exception mid-run switches to the hand-scale cue from the current forward value; the loop keeps running.
+  - The teleport allowance is capped at dt ≤ 0.1 s; past it, the hold says "arm/body moved - press c to re-lock".
+  - The lock needs trusted shoulders and wrists, and prints the locked arm.

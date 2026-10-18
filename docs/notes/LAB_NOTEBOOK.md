@@ -149,3 +149,18 @@ Final wrist-recovery verification: 238 tests passed in 45.34 seconds. git diff -
 - Live loop (cta-mirror --robot none --mirrored --hand left): 600-frame runs, average fps 24.4 and 22.8 with depth every frame vs 22.4 and 24.1 with --depth none; 200-frame runs 18.6-23.1. Target >= 20 fps met on the long runs; --depth-every 1 kept.
 - Hand point: wrist (lm 0) chosen over palm centre: lower smoothed p99 and fewer > 3 cm frames in all four takes; palm centre has slightly lower raw jitter. Depth itself is always sampled at the palm centre (the wrist patch hit the background: hand depth jumps p99 0.9-1.4 m per frame).
 - Recorder adds depth_hand, depth_shoulder, locked_side per row. Tests: 276 passed. No robot was moved; live camera runs were for fps only.
+
+## 2026-10-18 - Reach measurement fix, review round (forward home, gain, depth safety)
+
+- Independent review found: d_home was one unfiltered sample (take 04: first palm patch hit the background, d_home +0.78 m vs session median -0.55 m, so forward sat at the box max on 396/410 tracked frames); forward saturated the 22 cm x-box on 29-62% of tracked frames even with a sane home; a runtime depth exception would end the app loop (the finally closes the arms, torque off).
+- Fixes: forward home = median of >= 0.5 s of valid samples after 'c' (forward held at 0 until then); hand-shoulder depth outside -1.0..+0.3 m rejected; forward held when the shoulder depth is > 1 s old; d median restarted after a gap; same median home for the hand-scale fallback; depth errors -> warn once, continue on the hand-scale cue from the current forward (no jump); teleport allowance capped at dt 0.1 s with "arm/body moved - press c to re-lock"; lock needs trusted shoulders/wrists and prints the locked arm.
+- Forward gain chosen from a replay sweep (1 / 0.6 / 0.4 / 0.35 / 0.3 / 0.2): 0.3 = the largest with <= 10% saturation in every take. Saturation at 0.3: 0.0 / 8.6 / 0.5 / 0.0% (gain 1.0: 44.5 / 46.7 / 29.0 / 62.4%; OLD: 21.0 / 29.0 / 21.6 / 8.2%). Forward p5-p95 spans 10-16 cm of the 22 cm box.
+- Smoothed target before the speed limit, consecutive frames, p99 / max cm (OLD | NEW round 1 | NEW now):
+  - take 01: 2.78 / 3.90 | 4.22 / 5.08 | 3.05 / 3.82
+  - take 02: 2.45 / 4.21 | 3.09 / 4.29 | 2.16 / 2.79
+  - take 03: 2.39 / 2.97 | 2.99 / 4.27 | 2.20 / 2.65
+  - take 04: 2.79 / 3.54 | 3.70 / 4.78 | 4.05 / 5.14 (forward no longer saturated, so in-plane fast motion at 24 fps now shows)
+- Post-gap first-frame jumps (re-acquisition), max cm raw / smoothed / final: 19.0 / 13.5 / 1.1, 15.2 / 12.8 / 1.3, 19.4 / 14.3 / 1.3, 29.8 / 32.1 / 1.2.
+- Final target (after the 0.25 m/s limit): p99 <= 1.25 cm, max 1.25 cm, 0 jumps > 3 cm, 0 side switches in all takes.
+- Trade-off: take 02's held share rose 6.2% -> 18.2% (215 frames "arm/body moved - press c to re-lock": the capped teleport check holds until the shoulders return or 'c'; replay never re-presses 'c').
+- Tests: 287 passed.
