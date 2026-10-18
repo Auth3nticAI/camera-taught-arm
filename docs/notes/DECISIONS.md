@@ -114,6 +114,12 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Sent-path table clearance:** every command actually sent to the arm is checked against the table, not just the final target. A review simulation showed intermediate commands up to 19 cm below the table without this.
 - **Cost if wrong:** the arm is slightly more conservative (holds more often). Tray can relax the rules after live testing.
 
+### D-Q · 2026-10-18 · Table safety margin
+- **Options:** 0.5 cm · keep 2 cm · make it a flag
+- **Choice:** **0.5 cm**, set with `--table-margin 0.005`. Internally the check uses +1 mm to cover the fast collision model's worst-case 0.76 mm error.
+- **Why:** the blocks are 2.5 cm tall, and with a 2 cm margin the jaws can't reach a block's middle. The sim-to-real alignment error is about 3 mm, so 0.5 cm still keeps a buffer.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)
