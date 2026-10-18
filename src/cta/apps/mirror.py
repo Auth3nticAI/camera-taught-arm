@@ -24,6 +24,9 @@ from cta.units import SimRealMap
 
 
 KEY_CHARS = "csrqp"
+STALL_GAP_RAD = np.radians(10.0)  # target this far from the measured pose ...
+STALL_MOVE_RAD = np.radians(0.2)  # ... while the arm moves less than this per frame ...
+STALL_FRAMES = 45                 # ... for this many frames (~0.75 s) -> warn: arm not moving
 MAX_CONSEC_BUS_FAILS = 15
 WARN_EVERY_S = 1.0
 
@@ -175,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         smoother = OneEuro()
         pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
         prev = None
+        last_meas = None
+        stalled_frames = 0
         if follower is not None:
             prev = np.asarray(follower.read(), dtype=float)  # raw pose, unclamped: ramp into the margin
             if prev.shape != (6,) or not np.all(np.isfinite(prev)):
@@ -317,6 +322,25 @@ def main(argv: list[str] | None = None) -> int:
                         bus_err, skip_send = e, True
                 if q_leader is not None:
                     extra = {"leader": q_leader, "camera_cmd": q}  # camera q: logged, not sent
+                # ramp from the arm's MEASURED pose every frame (not the last command): if the arm
+                # stalls (e.g. no 12 V motor power, 2026-10-17) the commands stall with it
+                if not skip_send:
+                    try:
+                        q_meas = np.asarray(follower.read(), dtype=float)
+                        if q_meas.shape == (6,) and np.all(np.isfinite(q_meas)):
+                            q_foll = q_meas
+                    except Exception as e:  # serial hiccup: hold, send nothing new
+                        bus_err, skip_send = e, True
+                if q_foll is not None:
+                    target = q_leader if args.mode == "paired" else (q if status == "TRACKING" else None)
+                    moved = last_meas is not None and np.max(np.abs(q_foll - last_meas)) > STALL_MOVE_RAD
+                    gap = 0.0 if target is None else float(np.max(np.abs(clamp_margin(target) - q_foll)))
+                    stalled_frames = stalled_frames + 1 if (gap > STALL_GAP_RAD and not moved) else 0
+                    last_meas = q_foll
+                    if stalled_frames == STALL_FRAMES:
+                        print("WARNING: arm is not moving toward its commands - check the follower's 12 V "
+                              "motor power supply (motors only read on USB power)")
+                    prev = q_foll
                 if not skip_send:
                     q_new = select_command(args.mode, status, q, q_leader, prev, dt, max_speed)
                     try:
@@ -332,11 +356,6 @@ def main(argv: list[str] | None = None) -> int:
                         bus_err = e
                 q = prev
             if rec is not None:
-                if follower is not None:
-                    try:
-                        q_foll = follower.read()
-                    except Exception as e:
-                        bus_err = bus_err or e
                 rec.add(t_frame, obs, pipe.last_features, q_baseline, q_leader, q_foll, rgb,
                         status=STATUS_CODES.get(status, STATUS_UNKNOWN),
                         smoother_on=int(pipe.smoother is not None))

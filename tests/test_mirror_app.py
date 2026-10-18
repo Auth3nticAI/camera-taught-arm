@@ -233,3 +233,12 @@ def test_sync_data_help_lists_config():
     script = Path(__file__).resolve().parents[1] / "scripts" / "sync_data.py"
     out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0 and "config" in out.stdout
+
+
+def test_stalled_arm_commands_stay_near_measured_pose(monkeypatch, tmp_path, capsys):
+    # follower never moves (e.g. motors unpowered): commands must not drift toward the target
+    _run(monkeypatch, tmp_path, REST, LEADER, PAIRED + ["--max-frames", "60"], fail=lambda n: False)
+    assert len(FakeFollower.sent) >= 50
+    for q in FakeFollower.sent:
+        assert np.all(np.abs(q - REST) <= STEP)
+    assert "not moving" in capsys.readouterr().out
