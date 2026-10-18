@@ -334,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
                     except Exception as e:  # serial hiccup: hold, send nothing new
                         bus_err, skip_send = e, True
                 if q_foll is not None:
-                    target = q_leader if args.mode == "paired" else (q if status == "TRACKING" else None)
+                    target = q_leader if args.mode == "paired" else (q if status in ("TRACKING", "COAST") else None)
                     moved = last_meas is not None and np.max(np.abs(q_foll - last_meas)) > STALL_MOVE_RAD
                     gap = 0.0 if target is None else float(np.max(np.abs(clamp_margin(target) - q_foll)))
                     stalled_frames = stalled_frames + 1 if (gap > STALL_GAP_RAD and not moved) else 0

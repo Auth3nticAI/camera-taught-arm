@@ -204,3 +204,10 @@ def test_send_returns_clipped_action_as_rad():
     arm.connect()
     out = arm.send(READY_Q)
     assert np.allclose(out[:5], READY_Q[:5] * 0.5)
+
+
+def test_select_command_coast_keeps_moving_toward_target():
+    prev = np.array([0.0, -0.5, 0.5, 0.0, 0.0, 0.5])
+    target = prev + 0.3
+    q = select_command("mirror", "COAST", target, None, prev, 1 / 60, np.radians(90))
+    assert np.all(q > prev)

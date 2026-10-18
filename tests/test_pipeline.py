@@ -36,7 +36,9 @@ def test_step_holds_last_command_when_no_hand(kin, gains):
     p.calibrate(obs())
     q1, s1 = p.step(obs(wrist_uv=(0.4, 0.5)), 0.0)
     assert s1 == "TRACKING"
-    q2, s2 = p.step(None, 0.01)
+    q_coast, s_coast = p.step(None, 0.01)  # brief gap: COAST, same command (no jump)
+    assert s_coast == "COAST" and np.array_equal(q1, q_coast)
+    q2, s2 = p.step(None, 1.0)  # hand really gone: NO HAND, still holding
     assert s2 == "NO HAND"
     assert np.array_equal(q1, q2)
     assert p.last_features is None
@@ -121,3 +123,15 @@ def test_gripper_bypasses_arm_smoother(kin, gains):
     for i in range(6):
         q, _ = p.step(obs(pinch_closed=True), 0.016 * (i + 1))
     assert q[5] == pytest.approx(lo)  # gripper unaffected by the slow arm filter
+
+
+def test_brief_dropout_coasts_then_reports_no_hand(kin, gains):
+    from cta.pipeline import COAST_S
+
+    p = _calibrated(kin, gains)
+    q0, s0 = p.step(obs(), 0.0)
+    assert s0 == "TRACKING"
+    q1, s1 = p.step(None, COAST_S / 2)  # short gap: keep going toward the last target
+    assert s1 == "COAST" and np.allclose(q1, q0)
+    q2, s2 = p.step(None, COAST_S * 2)  # long gap: hold as before
+    assert s2 == "NO HAND"

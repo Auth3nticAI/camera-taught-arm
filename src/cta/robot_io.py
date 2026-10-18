@@ -25,12 +25,12 @@ def limit_speed(prev: np.ndarray, target: np.ndarray, dt: float, max_speed_rad_s
 
 def select_command(mode: str, status: str, pipeline_q: np.ndarray, leader_q: np.ndarray | None,
                    prev: np.ndarray, dt: float, max_speed_rad_s: float) -> np.ndarray:
-    """Per-frame safe command. mirror: follow pipeline only while TRACKING, else hold prev.
+    """Per-frame safe command. mirror: follow pipeline while TRACKING/COAST, else hold prev.
     paired: follow the leader only (pipeline q is never sent)."""
     if mode == "paired":
         desired = prev if leader_q is None else leader_q
     else:
-        desired = pipeline_q if status == "TRACKING" else prev
+        desired = pipeline_q if status in ("TRACKING", "COAST") else prev  # COAST: brief dropout
     return limit_speed(prev, clamp_margin(desired), dt, max_speed_rad_s)
 
 

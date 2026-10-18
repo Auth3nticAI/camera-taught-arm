@@ -14,6 +14,7 @@ from cta.mapping import Calibration, MapGains, calibrate, map_to_target, set_pin
 # in between keep the previous state (dead-zone stops flicker from noisy fingertip landmarks).
 GRIP_CLOSE_FRAC = 0.35
 GRIP_OPEN_FRAC = 0.55
+COAST_S = 0.15  # hand lost for less than this: report COAST (arm keeps moving to the last target)
 GRIP_STEP_RAD = 0.6  # per-frame gripper limit: full travel in ~4 frames, independent of the arm limit
 
 
@@ -29,6 +30,7 @@ class MirrorPipeline:
         self.q_cmd = READY_Q.astype(float).copy()
         self.last_features: HandFeatures | None = None
         self._grip_closed = False
+        self._last_seen_t: float | None = None
 
     def _grip_state(self, frac: float) -> bool:
         """Hysteresis on the pinch fraction (0 = pinched, 1 = open hand); returns True if closed."""
@@ -69,11 +71,14 @@ class MirrorPipeline:
             self.last_features = f  # recorded even uncalibrated (paired takes still need them)
             return READY_Q.astype(float).copy(), "UNCALIBRATED"
         if obs is None:
+            if self._last_seen_t is not None and t - self._last_seen_t <= COAST_S:
+                return self.q_cmd.copy(), "COAST"
             return self.q_cmd.copy(), "NO HAND"
         pos, pitch, roll, grip = map_to_target(f, self.cal, self.gains)
         if not np.all(np.isfinite([*pos, pitch, roll, grip])):
             return self.q_cmd.copy(), "NO HAND"
         self.last_features = f
+        self._last_seen_t = t
         lo, hi = SIM_LIMITS[5]
         grip = lo if self._grip_state((grip - lo) / (hi - lo)) else hi
         q = self.kin.ik(pos, pitch, self.q_cmd, roll, grip)

@@ -17,3 +17,20 @@ def test_select_hand_none_when_absent():
 def test_tracker_returns_none_on_blank_image():
     t = HandTracker(models_dir() / "hand_landmarker.task")
     assert t.detect(np.zeros((1080, 1920, 3), np.uint8), 0.0) is None
+
+
+def test_choose_hand_follows_position_when_label_flips():
+    from cta.hands import choose_hand
+
+    # tracked hand was at wrist (0.7, 0.6); this frame MediaPipe labels it the other side
+    labels, scores = ["Left", "Right"], [0.9, 0.9]
+    wrists = [(0.2, 0.5), (0.71, 0.61)]
+    assert choose_hand(labels, scores, wrists, want="left", mirrored_input=True, last_wrist=(0.7, 0.6)) == 1
+
+
+def test_choose_hand_uses_label_without_history_or_after_big_jump():
+    from cta.hands import choose_hand
+
+    labels, scores, wrists = ["Left", "Right"], [0.9, 0.9], [(0.2, 0.5), (0.7, 0.6)]
+    assert choose_hand(labels, scores, wrists, "left", True, last_wrist=None) == 0
+    assert choose_hand(labels, scores, wrists, "left", True, last_wrist=(0.5, 0.1)) == 0  # nothing near

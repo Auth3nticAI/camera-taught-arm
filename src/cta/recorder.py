@@ -4,7 +4,8 @@ Layout under <root>/<name>/: frames.npz, human.mp4 (frame i <-> row i), meta.jso
 Joint vectors are radians; absent data is NaN.
 
 Per-row codes:
-  status (uint8): 0 UNCALIBRATED, 1 NO HAND, 2 TRACKING, 255 unknown. Mask rows with status != 2
+  status (uint8): 0 UNCALIBRATED, 1 NO HAND, 2 TRACKING, 3 COAST (hand lost < 0.15 s; command =
+    last target, feats NaN), 255 unknown. Mask rows with status != 2
     (or hand_present) before training on feats; UNCALIBRATED rows carry features but the pipeline
     command is the constant READY_Q.
   smoother_on (int8): 1 smoother on, 0 off, -1 unknown.
@@ -24,7 +25,7 @@ from cta.features import HandFeatures
 from cta.hands import HandObservation
 
 VIDEO_FPS = 60
-STATUS_CODES = {"UNCALIBRATED": 0, "NO HAND": 1, "TRACKING": 2}
+STATUS_CODES = {"UNCALIBRATED": 0, "NO HAND": 1, "TRACKING": 2, "COAST": 3}
 STATUS_UNKNOWN = 255
 _REPLACE_TRIES = 5
 _REPLACE_SLEEP_S = 0.1
