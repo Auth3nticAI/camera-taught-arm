@@ -138,3 +138,17 @@ def test_pose_rows_roundtrip_and_nan_when_absent(tmp_path):
     assert d["pose_img"].dtype == np.float32 and d["pose_world"].dtype == np.float32
     import json
     assert json.loads((tmp_path / "s" / "meta.json").read_text())["control"] == "arm"
+
+
+
+def test_pose_vis_and_presence_rows(tmp_path):
+    vis, pres = np.linspace(0, 1, 33), np.full(33, 0.75)
+    with SessionRecorder(tmp_path, "s", {}, video_size=SIZE) as r:
+        r.add(0.0, None, None, np.zeros(6), None, None, _rgb(), pose_img=np.zeros((33, 3)),
+              pose_world=np.zeros((33, 3)), pose_vis=vis, pose_presence=pres)
+        _add(r)
+    d = load_session(tmp_path / "s")
+    assert d["pose_vis"].shape == (2, 33) and d["pose_presence"].shape == (2, 33)
+    assert d["pose_vis"].dtype == np.float32 and d["pose_presence"].dtype == np.float32
+    assert np.allclose(d["pose_vis"][0], vis) and np.allclose(d["pose_presence"][0], 0.75)
+    assert np.isnan(d["pose_vis"][1]).all() and np.isnan(d["pose_presence"][1]).all()

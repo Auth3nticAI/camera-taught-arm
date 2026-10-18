@@ -9,7 +9,8 @@ Per-row codes:
     (or hand_present) before training on feats; UNCALIBRATED rows carry features but the pipeline
     command is the constant READY_Q.
   smoother_on (int8): 1 smoother on, 0 off, -1 unknown.
-  pose_img, pose_world (33,3): MediaPipe Pose landmarks (--control arm), NaN when absent. Sessions
+  pose_img, pose_world (33,3), pose_vis, pose_presence (33,): MediaPipe Pose landmarks and their
+    per-landmark visibility/presence (--control arm), float32, NaN when absent. Sessions
     recorded before arm mode have no such keys. meta.json "control" = "arm" | "hand".
 """
 from __future__ import annotations
@@ -57,9 +58,10 @@ def _vec(q: np.ndarray | None) -> np.ndarray:
 class SessionRecorder:
     _SHAPES = {"t": (), "hand_present": (), "lm_img": (21, 3), "lm_world": (21, 3), "feats": (6,),
                "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,), "status": (), "smoother_on": (),
-               "pose_img": (33, 3), "pose_world": (33, 3)}
+               "pose_img": (33, 3), "pose_world": (33, 3), "pose_vis": (33,), "pose_presence": (33,)}
     _DTYPES = {"hand_present": bool, "status": np.uint8, "smoother_on": np.int8,
-               "pose_img": np.float32, "pose_world": np.float32}
+               "pose_img": np.float32, "pose_world": np.float32, "pose_vis": np.float32,
+               "pose_presence": np.float32}
 
     def __init__(self, root: Path, name: str, meta: dict, autosave_s: float = 30.0,
                  video_size: tuple[int, int] = (1280, 720)):
@@ -84,7 +86,8 @@ class SessionRecorder:
     def add(self, t: float, obs: HandObservation | None, feats: HandFeatures | None,
             q_baseline: np.ndarray, q_leader: np.ndarray | None, q_follower: np.ndarray | None,
             rgb: np.ndarray, status: int = STATUS_UNKNOWN, smoother_on: int = -1,
-            pose_img: np.ndarray | None = None, pose_world: np.ndarray | None = None) -> None:
+            pose_img: np.ndarray | None = None, pose_world: np.ndarray | None = None,
+            pose_vis: np.ndarray | None = None, pose_presence: np.ndarray | None = None) -> None:
         if self._closed:
             raise RuntimeError("recorder is closed")
         if self.n == self._cap:
@@ -105,6 +108,8 @@ class SessionRecorder:
         b["smoother_on"][i] = smoother_on
         b["pose_img"][i] = np.nan if pose_img is None else pose_img
         b["pose_world"][i] = np.nan if pose_world is None else pose_world
+        b["pose_vis"][i] = np.nan if pose_vis is None else pose_vis
+        b["pose_presence"][i] = np.nan if pose_presence is None else pose_presence
         w, h = self.video_size
         frame = rgb if (rgb.shape[1], rgb.shape[0]) == (w, h) else cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
         self._video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))  # a row always gets a frame

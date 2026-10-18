@@ -17,8 +17,10 @@ class PoseObservation:
     img: np.ndarray    # (33, 3) normalized image coords (in the camera's own, possibly mirrored, image)
     world: np.ndarray  # (33, 3) meters, hip-centred, camera axes: x right, y down, z away
     score: float       # mean visibility of the shoulder/elbow/wrist landmarks
-    vis: np.ndarray = field(default_factory=lambda: np.ones(33))       # (33,) per-landmark visibility 0..1
-    presence: np.ndarray = field(default_factory=lambda: np.ones(33))  # (33,) per-landmark presence 0..1
+    # per-landmark visibility / presence 0..1. Default 0 = untrusted, so gating fails CLOSED when a caller
+    # forgets them (the arm pipeline then treats the frame as no pose)
+    vis: np.ndarray = field(default_factory=lambda: np.zeros(33))
+    presence: np.ndarray = field(default_factory=lambda: np.zeros(33))
 
 
 class PoseTracker:
