@@ -27,6 +27,9 @@ class FakeCam:
         return CameraMode(1920, 1080, 60)
 
     def read(self):
+        if STATE.get("clock") is not None:  # deterministic 60 fps timestamps
+            STATE["clock"] += 1 / 60
+            return np.zeros((8, 8, 3), np.uint8), STATE["clock"]
         return np.zeros((8, 8, 3), np.uint8), time.perf_counter()
 
     def close(self):
@@ -81,6 +84,9 @@ class FakeFollower:
         if FakeFollower.fail(FakeFollower.calls):
             raise OSError("serial died")
         FakeFollower.sent.append(q.copy())
+        if STATE.get("deadband") is not None:  # real servo: ignores commands within its deadband
+            err = np.asarray(q) - STATE["pose"]
+            STATE["pose"] = STATE["pose"] + np.where(np.abs(err) > STATE["deadband"], err, 0.0)
 
     def close(self):
         closed.append("follower")
@@ -239,6 +245,20 @@ def test_stalled_arm_commands_stay_near_measured_pose(monkeypatch, tmp_path, cap
     # follower never moves (e.g. motors unpowered): commands must not drift toward the target
     _run(monkeypatch, tmp_path, REST, LEADER, PAIRED + ["--max-frames", "60"], fail=lambda n: False)
     assert len(FakeFollower.sent) >= 50
-    for q in FakeFollower.sent:
-        assert np.all(np.abs(q - REST) <= STEP)
+    from cta.apps.mirror import MAX_LEAD_RAD
+    for q in FakeFollower.sent:  # commands never run more than MAX_LEAD_RAD ahead of the stalled arm
+        assert np.all(np.abs(q - REST) <= MAX_LEAD_RAD + 1e-9)
     assert "not moving" in capsys.readouterr().out
+
+
+def test_servo_deadband_does_not_freeze_the_arm(monkeypatch, tmp_path):
+    # servos ignore tiny errors: ramping one small step ahead of the MEASURED pose never exceeds the
+    # deadband, so the arm crawls/freezes (seen live 2026-10-17). Ramping from the last command works.
+    STATE["deadband"] = np.radians(1.0)
+    STATE["clock"] = 0.0
+    try:
+        _run(monkeypatch, tmp_path, REST, LEADER, PAIRED + ["--max-frames", "300"], fail=lambda n: False)
+        moved = np.max(np.abs(STATE["pose"] - REST))
+    finally:
+        STATE["deadband"] = STATE["clock"] = None
+    assert moved > np.radians(5.0)

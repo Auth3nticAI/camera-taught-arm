@@ -27,6 +27,7 @@ KEY_CHARS = "csrqp"
 STALL_GAP_RAD = np.radians(10.0)  # target this far from the measured pose ...
 STALL_MOVE_RAD = np.radians(0.2)  # ... while the arm moves less than this per frame ...
 STALL_FRAMES = 45                 # ... for this many frames (~0.75 s) -> warn: arm not moving
+MAX_LEAD_RAD = np.radians(8.0)    # command may lead the measured pose by at most this (LeRobot clamps at 10)
 MAX_CONSEC_BUS_FAILS = 15
 WARN_EVERY_S = 1.0
 
@@ -322,8 +323,9 @@ def main(argv: list[str] | None = None) -> int:
                         bus_err, skip_send = e, True
                 if q_leader is not None:
                     extra = {"leader": q_leader, "camera_cmd": q}  # camera q: logged, not sent
-                # ramp from the arm's MEASURED pose every frame (not the last command): if the arm
-                # stalls (e.g. no 12 V motor power, 2026-10-17) the commands stall with it
+                # ramp from the LAST COMMAND (ramping from the measured pose crawls: each step is inside
+                # the servo deadband), but never let the command run more than MAX_LEAD_RAD ahead of the
+                # MEASURED pose - so a stalled arm (e.g. no 12 V motor power, 2026-10-17) can't be outrun
                 if not skip_send:
                     try:
                         q_meas = np.asarray(follower.read(), dtype=float)
@@ -340,9 +342,10 @@ def main(argv: list[str] | None = None) -> int:
                     if stalled_frames == STALL_FRAMES:
                         print("WARNING: arm is not moving toward its commands - check the follower's 12 V "
                               "motor power supply (motors only read on USB power)")
-                    prev = q_foll
                 if not skip_send:
                     q_new = select_command(args.mode, status, q, q_leader, prev, dt, max_speed)
+                    if q_foll is not None:
+                        q_new = np.clip(q_new, q_foll - MAX_LEAD_RAD, q_foll + MAX_LEAD_RAD)
                     try:
                         sent = follower.send(q_new)
                         prev = q_new
