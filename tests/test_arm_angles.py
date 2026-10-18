@@ -155,3 +155,47 @@ def test_side_indices():
     assert side_indices("left", False) == (11, 13, 15)
     assert side_indices("left", True) == (12, 14, 16)  # mirrored image: labels are swapped
     assert side_indices("right", False) == (12, 14, 16)
+
+
+# ---- review fixes: hidden hips, pan behind the torso, hysteresis --------------------------------------
+
+@pytest.mark.parametrize("mirrored", [False, True])
+def test_hidden_hips_fall_back_to_camera_up(mirrored):
+    a = body_dir(30, 70)
+    _, world = make_body(a, bend(a, 50), mirrored=mirrored)
+    ref = arm_joint_angles(world, "left", mirrored, 0.0)
+    garbage = world.copy()
+    garbage[[23, 24]] = [[0.3, -0.2, 0.4], [0.1, 0.5, -0.3]]  # occluded hips: Pose guesses nonsense
+    up, left, fwd = body_frame(garbage, mirrored, hips_ok=False)
+    assert np.allclose(up, [0, -1, 0], atol=1e-6) and np.allclose(left, [1, 0, 0], atol=1e-6)
+    assert np.allclose(arm_joint_angles(garbage, "left", mirrored, 0.0, hips_ok=False), ref, atol=1e-6)
+
+
+def test_pan_behind_torso_noise_does_not_flip():
+    for az in (178, -178, 179, -177, 150, -150):  # upper arm pointing behind the user, jittering across 180
+        _, world = make_body(body_dir(az, 90))
+        pan, _, _, valid = arm_joint_angles(world, "left", False, prev_pan=0.5)
+        assert not valid and pan == 0.5
+
+
+def test_pan_unwraps_and_stays_in_range():
+    _, world = make_body(body_dir(100, 90))  # slightly behind the shoulder line: still reachable (|pan| < 105)
+    pan, _, _, valid = arm_joint_angles(world, "left", False, prev_pan=D(-90))
+    assert valid and pan == pytest.approx(D(-100), abs=1e-6)
+    pan, _, _, valid = arm_joint_angles(world, "left", False, prev_pan=D(100))  # 200 deg jump in one frame
+    assert not valid and pan == pytest.approx(D(100))
+
+
+def test_pan_valid_hysteresis():
+    from cta.arm_angles import PAN_INVALID_FRAC, PAN_VALID_FRAC
+    assert PAN_INVALID_FRAC < PAN_VALID_FRAC
+    mid = np.degrees(np.arcsin((PAN_INVALID_FRAC + PAN_VALID_FRAC) / 2))  # horizontal fraction in the band
+    _, world = make_body(body_dir(20, mid))
+    assert arm_joint_angles(world, "left", False, 0.0, prev_valid=True)[3] is True
+    assert arm_joint_angles(world, "left", False, 0.3, prev_valid=False)[3] is False
+
+
+def test_pan_max_matches_joint_limit_and_margin():
+    from cta.arm_angles import PAN_MAX_RAD
+    from cta.config import SIM_LIMITS
+    assert PAN_MAX_RAD == pytest.approx(min(-SIM_LIMITS[0, 0], SIM_LIMITS[0, 1]) - 0.087)

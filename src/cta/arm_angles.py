@@ -24,7 +24,12 @@ _SIDE = {"left": (L_SH, L_EL, L_WR), "right": (R_SH, R_EL, R_WR)}
 
 LIFT_OFFSET_RAD = float(np.radians(13.968))
 ELBOW_OFFSET_RAD = float(np.radians(73.825))
-MIN_HORIZONTAL_FRAC = 0.35  # |upper arm horizontal part| below this x |upper arm|: azimuth undefined
+# azimuth is undefined for a near-vertical upper arm. Hysteresis on |horizontal part| / |upper arm|:
+# a valid pan turns invalid below PAN_INVALID_FRAC, an invalid one turns valid again above PAN_VALID_FRAC
+PAN_INVALID_FRAC = 0.30
+PAN_VALID_FRAC = 0.40
+PAN_MAX_RAD = 1.91986 - 0.087  # shoulder_pan limit (MuJoCo model, 110 deg) minus the 5 deg command margin
+_CAM_UP = np.array([0.0, -1.0, 0.0])
 
 
 def unmirror(lm: np.ndarray, image_coords: bool) -> np.ndarray:
@@ -43,9 +48,13 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return v / np.linalg.norm(v)
 
 
-def _frame(w: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    up = _unit((w[L_SH] + w[R_SH]) / 2 - (w[L_HIP] + w[R_HIP]) / 2)
+def _frame(w: np.ndarray, hips_ok: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     left = w[L_SH] - w[R_SH]
+    if hips_ok:
+        up = _unit((w[L_SH] + w[R_SH]) / 2 - (w[L_HIP] + w[R_HIP]) / 2)
+    else:  # hips hidden (e.g. seated at a desk): camera up, made perpendicular to the shoulder line
+        s = _unit(left)
+        up = _unit(_CAM_UP - s * (_CAM_UP @ s))
     left = _unit(left - up * (left @ up))
     fwd = _unit(np.cross(left, up))
     if fwd @ np.array([0.0, 0.0, -1.0]) < 0:  # the chest faces the camera (camera z points away)
@@ -55,10 +64,12 @@ def _frame(w: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return up, np.cross(up, fwd), fwd
 
 
-def body_frame(world: np.ndarray, mirrored: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(up, left, fwd) unit vectors in unmirrored camera axes, from Pose world landmarks."""
+def body_frame(world: np.ndarray, mirrored: bool, hips_ok: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(up, left, fwd) unit vectors in unmirrored camera axes, from Pose world landmarks.
+
+    hips_ok=False: the hip landmarks are guesses; `up` = camera up orthogonalized against the shoulders."""
     w = unmirror(world, image_coords=False) if mirrored else np.asarray(world, dtype=float)
-    return _frame(w)
+    return _frame(w, hips_ok)
 
 
 def choose_arm_side(pose_img: np.ndarray, hand_wrist_uv, last_side: str | None, want: str,
@@ -75,15 +86,18 @@ def choose_arm_side(pose_img: np.ndarray, hand_wrist_uv, last_side: str | None, 
     return min(d, key=d.get)
 
 
-def arm_joint_angles(world: np.ndarray, side: str, mirrored: bool,
-                     prev_pan: float) -> tuple[float, float, float, bool]:
-    """(pan, lift, elbow, pan_valid) in robot radians for the user's `side` arm (unclamped).
+def arm_joint_angles(world: np.ndarray, side: str, mirrored: bool, prev_pan: float,
+                     prev_valid: bool = True, hips_ok: bool = True) -> tuple[float, float, float, bool]:
+    """(pan, lift, elbow, pan_valid) in robot radians for the user's `side` arm (lift/elbow unclamped).
 
     pan = -azimuth (azimuth: 0 = forward, + = toward the user's left; +pan swings the robot gripper
-    toward its right, -y). Near-vertical upper arm: azimuth undefined -> prev_pan, pan_valid False.
+    toward its right, -y), unwrapped toward prev_pan. pan_valid False (and pan = prev_pan) when:
+      - the upper arm is near vertical (azimuth undefined; hysteresis via prev_valid), or
+      - the unwrapped pan is beyond the pan range (upper arm pointing behind the torso, where azimuth
+        noise across +-180 deg would otherwise flip the base by ~200 deg).
     """
     w = unmirror(world, image_coords=False) if mirrored else np.asarray(world, dtype=float)
-    up, left, fwd = _frame(w)
+    up, left, fwd = _frame(w, hips_ok)
     sh, el, wr = _SIDE[side]
     a, b = w[el] - w[sh], w[wr] - w[el]
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
@@ -91,6 +105,9 @@ def arm_joint_angles(world: np.ndarray, side: str, mirrored: bool,
     flex = float(np.arccos(np.clip(a @ b / (na * nb), -1.0, 1.0)))
     elbow = flex - ELBOW_OFFSET_RAD
     af, al = float(a @ fwd), float(a @ left)
-    if np.hypot(af, al) < MIN_HORIZONTAL_FRAC * na:
+    if np.hypot(af, al) < (PAN_INVALID_FRAC if prev_valid else PAN_VALID_FRAC) * na:
         return float(prev_pan), lift, elbow, False
-    return float(-np.arctan2(al, af)), lift, elbow, True
+    pan = float(prev_pan + (-np.arctan2(al, af) - prev_pan + np.pi) % (2 * np.pi) - np.pi)
+    if abs(pan) > PAN_MAX_RAD:
+        return float(prev_pan), lift, elbow, False
+    return pan, lift, elbow, True
