@@ -98,3 +98,13 @@ def test_calibration_json_roundtrip(tmp_path):
     assert np.allclose(back.p0, cal.p0)
     for f in ("u0", "v0", "s0", "pitch0", "roll0", "pinch_closed", "pinch_open", "pitch_home"):
         assert getattr(back, f) == getattr(cal, f)
+
+
+def test_roll_delta_wraps_across_pi():
+    # home roll near +180 deg; a small wobble past the wrap reads as -179 deg - must map to ~+2 deg, not -358
+    home = dataclasses.replace(HOME, roll=np.radians(179.0))
+    cal = calibrate(home, KIN)
+    _, _, roll, _ = map_to_target(dataclasses.replace(home, roll=np.radians(-179.0)), cal, _GAINS)
+    assert np.isclose(roll, np.radians(2.0), atol=1e-9)
+    _, _, roll, _ = map_to_target(dataclasses.replace(home, roll=np.radians(177.0)), cal, _GAINS)
+    assert np.isclose(roll, np.radians(-2.0), atol=1e-9)

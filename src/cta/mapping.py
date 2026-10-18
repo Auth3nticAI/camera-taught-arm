@@ -103,7 +103,9 @@ def map_to_target(
     x = cal.p0[0] + g.k_fwd * (1.0 - cal.s0 / max(f.scale, 1e-6))
     pos = np.clip([x, y, z], g.box_min, g.box_max)
     pitch = cal.pitch_home + (f.pitch - cal.pitch0)
-    roll = f.roll - cal.roll0
+    # wrap to [-pi, pi): roll comes from arctan2, so a home pose near +-180 deg would otherwise
+    # flip by a full turn on tiny wobbles (seen live 2026-10-17: wrist thrashing)
+    roll = (f.roll - cal.roll0 + np.pi) % (2 * np.pi) - np.pi
     t = float(np.clip((f.pinch - cal.pinch_closed) / (cal.pinch_open - cal.pinch_closed), 0, 1))
     lo, hi = SIM_LIMITS[5]
     return pos, float(pitch), float(roll), float(lo + t * (hi - lo))
