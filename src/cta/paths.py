@@ -13,6 +13,8 @@ def data_dir() -> Path:
 
 
 def models_dir() -> Path:
-    p = data_dir() / "models"
+    """Models from CTA_MODELS_DIR if set (tests point data_dir at a temp dir but keep real models)."""
+    override = os.environ.get("CTA_MODELS_DIR")
+    p = Path(override) if override else data_dir() / "models"
     p.mkdir(parents=True, exist_ok=True)
     return p

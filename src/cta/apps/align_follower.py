@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     out_path = data_dir() / "sim_real_map.json"
+    poses_path = data_dir() / "align_poses.npz"  # every capture, so a fit can be re-run offline
     preview = SimRealMap()
     poses_deg: list[np.ndarray] = []
     poses_grip: list[float] = []
@@ -96,10 +97,13 @@ def main(argv: list[str] | None = None) -> int:
                     deg = np.array([obs[f"{j}.pos"] for j in JOINTS[:5]])
                     poses_deg.append(deg)
                     poses_grip.append(float(real_to_sim(obs, SimRealMap())[5]))
-                    print(f"captured #{len(poses_deg)}  contact z (current map) = {1000 * model.lowest_z(q):+.1f} mm")
+                    np.savez(poses_path, real_deg=np.array(poses_deg), grip_q=np.array(poses_grip))
+                    print(f"captured #{len(poses_deg)}  contact z vs table (current map) = "
+                          f"{1000 * (model.lowest_z(q) - model.table_z):+.1f} mm")
                 elif c == "u" and poses_deg:
                     poses_deg.pop()
                     poses_grip.pop()
+                    np.savez(poses_path, real_deg=np.array(poses_deg).reshape(-1, 5), grip_q=np.array(poses_grip))
                     print(f"removed last; {len(poses_deg)} poses")
                 elif c == "s":
                     try:
@@ -109,17 +113,23 @@ def main(argv: list[str] | None = None) -> int:
                         continue
                     preview = SimRealMap(offset_deg=result.offset_deg)
                     print("offsets (deg) lift/elbow/wrist_flex:", np.round(result.offset_deg[1:4], 2).tolist())
-                    print(f"table height z0 = {1000 * result.z0:+.1f} mm (base frame)")
+                    print("uncertainty (1 sigma, deg):", np.round(result.std_deg, 2).tolist())
+                    print(f"table plane fixed at base bottom: {1000 * result.z0:+.1f} mm (base frame)")
                     print(f"contact error RMS: {1000 * result.rms_before:.1f} mm -> {1000 * result.rms_after:.1f} mm")
                     print("per-pose residual (mm):", np.round(1000 * result.residuals_m, 1).tolist())
                     if result.rms_after > 0.004:
                         print("WARNING: residual > 4 mm - a touch pose may be bad (undo + recapture) or the jaws pressed into the table.")
-                    if np.any(np.abs(result.offset_deg) >= 14.9):
-                        print("WARNING: an offset hit the 15 deg bound - recheck calibration before writing.")
-                    print("preview applied to the twin; press 'w' to write it.")
+                    if result.trusted:
+                        print("fit looks trustworthy; preview applied to the twin - press 'w' to write it.")
+                    else:
+                        print("NOT TRUSTED (an offset hit the 15 deg bound or uncertainty > 2 deg): "
+                              "add more varied touch poses and solve again. 'w' is disabled for this fit.")
                 elif c == "w":
                     if result is None:
                         print("solve first ('s').")
+                        continue
+                    if not result.trusted:
+                        print("refusing to write an untrusted fit - capture more varied poses and solve again.")
                         continue
                     if out_path.exists():
                         shutil.copy2(out_path, out_path.with_suffix(".json.bak"))

@@ -5,11 +5,10 @@ from cta.align import ContactModel, solve_offsets
 from cta.config import SIM_LIMITS
 
 TRUE_OFFSET = np.array([0.0, 3.0, -2.0, 4.0, 0.0])  # deg; only lift/elbow/wrist_flex are observable
-TRUE_Z0 = 0.005
 
 
 def _touch_poses(model: ContactModel, n: int = 10, seed: int = 0) -> np.ndarray:
-    """Sim poses whose lowest jaw point sits exactly at TRUE_Z0 (lift found by bisection)."""
+    """Sim poses whose lowest jaw point sits exactly on the table (lift found by bisection)."""
     rng = np.random.default_rng(seed)
     poses = []
     while len(poses) < n:
@@ -22,7 +21,7 @@ def _touch_poses(model: ContactModel, n: int = 10, seed: int = 0) -> np.ndarray:
 
         def h(lift):
             q[1] = lift
-            return model.lowest_z(q) - TRUE_Z0
+            return model.lowest_z(q) - model.table_z
 
         if h(lo) * h(hi) > 0:
             continue
@@ -48,8 +47,9 @@ def test_recovers_offsets_and_table_height(model):
     res = solve_offsets(real_deg, q[:, 5], model)
     assert np.allclose(res.offset_deg[1:4], TRUE_OFFSET[1:4], atol=0.3)
     assert res.offset_deg[0] == 0.0 and res.offset_deg[4] == 0.0
-    assert abs(res.z0 - TRUE_Z0) < 0.001
+    assert res.z0 == model.table_z
     assert res.rms_after < 0.0005 < res.rms_before
+    assert res.trusted and np.all(res.std_deg < 1.0)
 
 
 def test_zero_offsets_when_already_aligned(model):
@@ -67,3 +67,8 @@ def test_offsets_bounded(model):
     q = _touch_poses(model, n=8, seed=2)
     res = solve_offsets(np.degrees(q[:, :5]) + np.array([0, 40.0, 0, 0, 0]), q[:, 5], model)
     assert np.all(np.abs(res.offset_deg) <= 15.0 + 1e-9)
+    assert not res.trusted
+
+
+def test_table_is_base_bottom(model):
+    assert -0.01 < model.table_z < 0.0  # base mesh bottom sits ~2.4 mm below the base frame
