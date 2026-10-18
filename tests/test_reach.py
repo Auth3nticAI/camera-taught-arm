@@ -20,6 +20,7 @@ from cta.reach import (ARM_PER_SHOULDER, REACH_FRACTION, WindowMedian, fwd_from_
                        palm_centre, plane_reach, reach_target, shoulder_sep)
 
 D = np.radians
+MOVED = "arm/body moved - press c to re-lock"
 ASPECT = 16 / 9
 
 
@@ -219,9 +220,25 @@ def test_shoulder_sanity_checks_still_hold(kin, gains):
     bad = pose()
     bad.img[[11, 12], 1] += 0.4
     q2, _ = p.step(hand(po), 0.08, bad, depth(po))
-    assert np.array_equal(q0, q2) and p.tracking_hold_reason == "shoulders jumped"
+    assert np.array_equal(q0, q2) and p.tracking_hold_reason == MOVED
     _, s = p.step(hand(po), 0.12, po, depth(po))
     assert s == "TRACKING" and p.tracking_hold_reason is None  # no multi-frame reacquisition hold
+
+
+def test_body_moved_during_a_gap_holds_until_relock(kin, gains, capsys):
+    """Teleport allowance is capped (dt <= 0.1 s): a body that moved far while the hand was away holds
+    (with a 're-lock' message) until 'c'."""
+    p = calibrated(kin, gains)
+    po = pose()
+    p.step(hand(po), 0.0, po, depth(po))
+    p.step(None, 1.0, po)
+    moved = pose()
+    moved.img[:, 0] += 0.25  # the whole body 0.25 image widths to the side
+    for t in (3.0, 3.1, 5.0):
+        _, s = p.step(hand(moved, side="left"), t, moved, depth(moved))
+        assert s != "TRACKING" and p.tracking_hold_reason == MOVED
+    p.calibrate(hand(moved), moved)
+    assert p.step(hand(moved), 5.1, moved, depth(moved))[1] == "TRACKING"
 
 
 def test_pose_wrist_teleport_does_not_move_the_target(kin, gains):
@@ -253,7 +270,7 @@ def test_home_relative_target_is_p0_plus_reach_times_delta_n(kin, gains):
 
 
 def test_home_relative_forward_from_depth(kin, gains):
-    p = calibrated(kin, gains, home_relative=True)
+    p = calibrated(kin, gains, home_relative=True, fwd_gain=1.0)
     po = pose(0, 120, 30)
     run(p, hand(po), po, n=10)
     closer = depth(po)
@@ -474,3 +491,108 @@ def test_reach_line_and_recorder_fields(kin, gains):
     assert np.isfinite(p.depth_hand) and np.isfinite(p.depth_shoulder) and p.depth_hand < p.depth_shoulder
     p.step(None, 5.0, po)
     assert p.reach_line_uv is None and np.isnan(p.depth_hand)
+
+
+# ---- review round 2026-10-18: forward home, depth sanity, staleness, lock visibility --------------------
+
+def closer_map(po, dz, side="left"):
+    m = depth(po, side)
+    m[m < m.max()] -= dz  # the hand disc dz closer to the camera
+    return m
+
+
+def test_forward_home_is_a_half_second_median_and_rejects_impossible_depth(kin, gains):
+    """take 04: the first depth sample hit the background (d = +0.78 m, hand 'behind' the shoulder) and
+    became d_home. Now: impossible d is rejected, d_home = median of >= 0.5 s of valid samples, and
+    forward is held at home until then."""
+    p = ReachPipeline(kin, None, gains, None, home_relative=True, hand_point="wrist", fwd_gain=1.0)
+    po = pose(0, 120, 30)
+    p.calibrate(hand(po), po)
+    bad = closer_map(po, -(0.78 + 0.37))  # hand disc reads 0.78 m BEHIND the shoulder
+    p.step(hand(po), 0.0, po, bad)
+    assert p._d is None  # rejected outright
+    for i in range(1, 12):  # 0.04 .. 0.44 s: the hand drifts 5 cm closer; forward held until home exists
+        p.step(hand(po), i * 0.04, po, closer_map(po, 0.05 * (i % 2)))
+        assert p.raw_target[0] == pytest.approx(p.cal.p0[0])
+    for i in range(12, 20):
+        p.step(hand(po), i * 0.04, po, depth(po))
+    assert p._d_home == pytest.approx(-0.37, abs=0.06)
+    assert p.raw_target[0] == pytest.approx(p.cal.p0[0], abs=0.02)
+
+
+def test_fwd_gain_scales_relative_forward(kin, gains):
+    out = []
+    for g in (1.0, 0.5):
+        p = calibrated(kin, gains, home_relative=True, fwd_gain=g)
+        po = pose(0, 120, 30)
+        run(p, hand(po), po, n=40)
+        run(p, hand(po), po, n=5, t0=2.0, dmap=closer_map(po, 0.05))
+        out.append(p.raw_target[0] - p.cal.p0[0])
+    assert out[0] > 0.02 and out[1] == pytest.approx(out[0] / 2, abs=1e-3)
+
+
+def test_scale_fallback_home_is_a_median_not_one_frame(kin, gains):
+    p = ReachPipeline(kin, None, gains, None, home_relative=True, fwd_source="scale", fwd_gain=1.0)
+    po = pose(0, 120, 30)
+    wr = tuple(po.img[15, :2])
+    p.calibrate(hand(po), po)
+    p.step(HandObservation(*make_hand(scale=1.6, wrist_uv=wr), "left", 0.9), 0.0, po)  # one odd first frame
+    for i in range(1, 20):
+        p.step(HandObservation(*make_hand(wrist_uv=wr), "left", 0.9), i * 0.04, po)
+    assert np.allclose(p.raw_target, p.cal.p0, atol=1e-6)  # the outlier didn't become the home
+
+
+def test_stale_shoulder_depth_holds_forward(kin, gains):
+    """Hand over the shoulder (shoulder unsampled) for > 1 s after a gap: don't trust the old shoulder depth."""
+    p = calibrated(kin, gains, home_relative=True, fwd_gain=1.0)
+    po = pose(0, 120, 30)
+    run(p, hand(po), po, n=40)
+    x0 = p.raw_target[0]
+    over = pose(0, 90)  # hand right in front of the shoulder: the shoulder patch is covered
+    run(p, hand(over), over, n=10, t0=3.0, dmap=closer_map(over, 0.3))
+    assert p.raw_target[0] == pytest.approx(x0)
+
+
+def test_depth_median_restarts_after_a_gap(kin, gains):
+    p = calibrated(kin, gains, home_relative=True, fwd_gain=1.0)
+    po = pose(0, 120, 30)
+    run(p, hand(po), po, n=40)
+    p.step(None, 1.0, po)
+    p.step(hand(po), 1.5, po, closer_map(po, 0.1))  # first frame after a > COAST_S gap
+    assert p._d == pytest.approx(-0.37 - 0.1, abs=0.02)  # not a median with pre-gap samples
+
+
+def test_depth_failed_switches_to_hand_scale_without_a_jump(kin, gains):
+    p = calibrated(kin, gains, home_relative=True, fwd_gain=1.0)
+    po = pose(0, 120, 30)
+    run(p, hand(po), po, n=40)
+    run(p, hand(po), po, n=5, t0=2.0, dmap=closer_map(po, 0.05))
+    x0 = p.raw_target[0]
+    assert x0 > p.cal.p0[0] + 0.02
+    p.depth_failed()
+    assert p.fwd_source == "scale"
+    run(p, hand(po), po, n=40, t0=3.0, dmap=None)
+    assert p.raw_target[0] == pytest.approx(x0, abs=1e-6)  # forward continues from where depth left it
+
+
+def test_lock_needs_visible_landmarks_and_says_so(kin, gains, capsys):
+    p = ReachPipeline(kin, None, gains, None)
+    po = pose()
+    po.vis[[15, 16]] = 0.1  # both wrists guessed
+    p.calibrate(hand(po), po)
+    assert p.locked_side is None
+    ok = pose()
+    p.step(hand(ok), 0.0, ok, depth(ok))
+    assert p.locked_side == "left"
+    assert "arm locked: left (press c to re-lock)" in capsys.readouterr().out
+
+
+def test_depth_fields_are_per_frame(kin, gains):
+    p = calibrated(kin, gains)
+    po = pose(0, 120, 30)
+    m = depth(po)
+    m[:, :] = np.where(m < m.max(), m, np.nan)  # shoulder unreadable this frame
+    p.step(hand(po), 0.0, po, m)
+    assert np.isfinite(p.depth_hand)  # recorded whenever measured
+    p.step(hand(po), 0.02, po, None)
+    assert np.isnan(p.depth_hand) and np.isfinite(p.depth_shoulder)

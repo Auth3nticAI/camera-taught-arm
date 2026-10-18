@@ -34,6 +34,16 @@ CART_CLEAR_TOL_M = 0.001  # reach mode: Cartesian clearance lands within 1 mm ab
 POSE_MIN_VIS = 0.5     # arm mode: tracked-arm + shoulder landmarks need min(visibility, presence) >= this
 HAND_ENGAGE_S = 1.0    # arm mode: the body drives the robot only if the hand was seen this recently
 TARGET_SPEED_MPS = 0.25  # reach (relative mapping): the smoothed 3-D target moves at most this fast
+FWD_GAIN = 0.3           # reach (relative): forward gain. From replay (reach_train_01..04): at 1.0 forward
+                         # saturated the x-box on 29-62% of tracked frames; 0.3 = largest gain in the sweep
+                         # (1/0.6/0.4/0.35/0.3/0.2) with <= 10% saturation in every take (0/8.6/0.5/0%)
+FWD_HOME_S = 0.5         # reach: the forward home is the median of >= this long of valid samples after 'c'
+FWD_HOME_MIN_SAMPLES = 3
+D_MIN_M, D_MAX_M = -1.0, 0.3  # reach: plausible hand - shoulder depth (hand <= 1 m in front, <= 0.3 m behind);
+                              # outside = the patch missed the hand (take 04 frame 13: +0.78 m) -> rejected
+SH_DEPTH_MAX_AGE_S = 1.0  # reach: shoulder depth older than this (hand covering it) -> forward held
+TELEPORT_DT_CAP_S = 0.1   # reach: shoulder-teleport allowance 0.08 + 0.8 * min(dt, this)
+MOVED_REASON = "arm/body moved - press c to re-lock"
 DEPTH_MEDIAN_FRAMES = 3  # reach: median over the last N hand-shoulder depth differences (measurement denoise)
 HAND_POINT = "wrist"     # reach: hand tracker point for "where" ("wrist" = lm 0, "palm" = mean of 0,5,9,13,17)
 CLEARANCE_DIRS = 500   # extreme-vertex directions: lowest_z ~0.1 ms; <= ~0.8 mm optimistic (reviewer
@@ -414,7 +424,7 @@ class ReachPipeline(_BodyPipeline):
                  smoother: OneEuro | None, max_step_rad: float = 0.15, aspect: float = 16 / 9,
                  mirrored: bool = False, want: str = "left", pose_min_vis: float = POSE_MIN_VIS,
                  contact=None, table_margin: float = TABLE_CLEARANCE_M, home_relative: bool = False,
-                 hand_point: str = HAND_POINT, fwd_source: str = "depth"):
+                 hand_point: str = HAND_POINT, fwd_source: str = "depth", fwd_gain: float = FWD_GAIN):
         super().__init__(kin, cal, gains, smoother, max_step_rad, aspect, mirrored, want, pose_min_vis,
                          contact, table_margin)
         if hand_point not in ("wrist", "palm") or fwd_source not in ("depth", "scale"):
@@ -425,6 +435,7 @@ class ReachPipeline(_BodyPipeline):
         self.home_relative = home_relative
         self.hand_point = hand_point
         self.fwd_source = fwd_source
+        self.fwd_gain = float(fwd_gain)
         self.box_min = np.array(gains.box_min, dtype=float)
         self.box_max = np.array(gains.box_max, dtype=float)
         self.box_min[2] = self.contact.table_z + table_margin + CLEARANCE_PAD_M
@@ -523,9 +534,15 @@ class ReachPipeline(_BodyPipeline):
         self._sh_depth = WindowMedian()   # shoulder patch depth (m)
         self._d: float | None = None      # depth_hand - depth_shoulder, short median (held between depth frames)
         self._d_buf: deque[float] = deque(maxlen=DEPTH_MEDIAN_FRAMES)
+        self._d_t: float | None = None    # time of the last accepted d sample
         self._d_home: float | None = None
-        self._ratio_home: float | None = None  # hand-scale fallback: (hand scale / sep) at home
+        self._home_samples: list[tuple] = []  # forward home candidates (t, d) or (t, ratio, sep)
+        self._sh_depth_t: float | None = None  # time of the last shoulder depth sample
+        self._ratio_home: float | None = None  # hand-scale fallback: median (hand scale / sep) at home
         self._sep_home: float | None = None
+        self._fwd_scale = 0.0     # last hand-scale forward (relative, before gain)
+        self._fwd_offset = 0.0    # forward carried over when depth fails mid-session (depth_failed)
+        self._last_fwd_rel = 0.0
         self._shoulder_span: float | None = None
         self._prev_shoulders: np.ndarray | None = None
         self._prev_shoulders_t: float | None = None
@@ -539,12 +556,33 @@ class ReachPipeline(_BodyPipeline):
         self._try_lock(obs, pose_obs)
 
     def _try_lock(self, obs: HandObservation | None, pose_obs) -> None:
+        """Lock the arm whose Pose wrist is nearest the hand-tracker wrist; shoulders and wrists must be
+        finite and trusted (min(visibility, presence) >= pose_min_vis)."""
         if self.locked_side is not None or obs is None or pose_obs is None:
             return
-        if not np.all(np.isfinite(np.asarray(pose_obs.img)[[11, 12, 13, 14, 15, 16], :2])):
+        idx = [11, 12, 15, 16]
+        if not np.all(np.isfinite(np.asarray(pose_obs.img)[idx, :2])):
+            return
+        conf = np.minimum(np.asarray(pose_obs.vis, float), np.asarray(pose_obs.presence, float))
+        if not np.all(conf[idx] >= self.pose_min_vis):
             return
         self.locked_side = choose_arm_side(pose_obs.img, obs.lm_img[0, :2], None, self.want, self.mirrored)
         self.side = self.locked_side
+        print(f"arm locked: {self.locked_side} (press c to re-lock)")
+
+    def depth_failed(self) -> None:
+        """The depth model died mid-session: continue on the hand-scale cue from the current forward value
+        (no jump; forward is held while the hand-scale home is measured)."""
+        if self.fwd_source == "depth":
+            self.fwd_source = "scale"
+            self._fwd_offset = self._last_fwd_rel
+            self._fwd_scale = 0.0
+            self._ratio_home = self._sep_home = None
+            self._home_samples = []
+
+    def _home_ready(self, t: float) -> bool:
+        h = self._home_samples
+        return len(h) >= FWD_HOME_MIN_SAMPLES and t - h[0][0] >= FWD_HOME_S
 
     def _hold(self, reason: str, t: float) -> tuple[np.ndarray, str]:
         self.tracking_hold_reason = reason
@@ -552,9 +590,9 @@ class ReachPipeline(_BodyPipeline):
 
     def _shoulder_glitch(self, pose_obs, t: float) -> str | None:
         """Confidence alone can't catch confident hallucinations (visibility reads ~1.0 throughout the
-        recordings). Shoulders out of view, a collapsed/changed span or a frame-to-frame teleport -> hold.
-        The teleport allowance grows with the time since the last good shoulders, so a body that moved
-        while the hand was away is re-accepted instead of holding forever."""
+        recordings). Shoulders out of view, a collapsed/changed span or a teleport -> hold. The teleport
+        allowance is 0.08 + 0.8 * min(dt, 0.1 s) from the last good shoulders: a body that moved far while
+        unseen holds until it comes back or 'c' re-locks."""
         shoulders = np.asarray(pose_obs.img[[11, 12], :2], dtype=float)
         span = float(np.linalg.norm(shoulders[0] - shoulders[1]))
         if np.any(shoulders < 0.02) or np.any(shoulders > 0.98):
@@ -563,43 +601,66 @@ class ReachPipeline(_BodyPipeline):
                            not 0.5 * self._shoulder_span <= span <= 2.0 * self._shoulder_span):
             return "shoulder span collapsed or changed"
         if self._prev_shoulders is not None:
-            dt = max(0.0, t - self._prev_shoulders_t)
+            dt = min(max(0.0, t - self._prev_shoulders_t), TELEPORT_DT_CAP_S)
             if np.linalg.norm(shoulders - self._prev_shoulders, axis=1).max() > 0.08 + 0.8 * dt:
-                return "shoulders jumped"
+                return MOVED_REASON  # teleport, or the body moved while unseen: held until it returns / 'c'
         self._prev_shoulders, self._prev_shoulders_t = shoulders, t
         return None
 
     def _forward(self, f: HandFeatures, obs_lm: np.ndarray, sh_uv: np.ndarray, sep: float,
                  depth_map: np.ndarray | None, t: float) -> tuple[float, float]:
-        """(n_fwd relative to home, n_fwd absolute). Depth: d = palm-centre patch depth - shoulder depth,
-        median of the last DEPTH_MEDIAN_FRAMES samples (monocular depth flickers ~3-5 cm frame to frame at
-        the hand; the in-plane hand tracker ~0.1 cm), held between depth frames; the shoulder depth is a
-        0.5 s median, not sampled while the hand covers the shoulder.
-        Scale fallback: relative only (absolute = relative)."""
+        """(n_fwd relative to home x fwd_gain, n_fwd absolute). Forward is held at home (0) until the home is
+        the median of >= FWD_HOME_S of valid samples after 'c'.
+
+        Depth: d = palm-centre patch depth - shoulder depth. Samples outside [D_MIN_M, D_MAX_M] (the patch
+        missed the hand) are rejected; d = median of the last DEPTH_MEDIAN_FRAMES samples, restarted after a
+        gap > COAST_S, held between depth frames. The shoulder depth is a 0.5 s median, not sampled while the
+        hand covers the shoulder; older than SH_DEPTH_MAX_AGE_S -> d held.
+        Scale fallback: relative only (absolute = relative); non-finite samples hold the last value."""
         if self.fwd_source == "scale":
             ratio = f.scale * self.aspect / sep
-            if self._ratio_home is None:
-                self._ratio_home, self._sep_home = ratio, sep
-            n = fwd_from_hand_scale(ratio / self._ratio_home, self._sep_home)
+            if np.isfinite(ratio) and ratio > 0:
+                if self._ratio_home is None:
+                    self._home_samples.append((t, ratio, sep))
+                    if self._home_ready(t):
+                        self._ratio_home = float(np.median([h[1] for h in self._home_samples]))
+                        self._sep_home = float(np.median([h[2] for h in self._home_samples]))
+                if self._ratio_home is not None:
+                    self._fwd_scale = fwd_from_hand_scale(ratio / self._ratio_home, self._sep_home)
+            n = self._fwd_offset + self.fwd_gain * self._fwd_scale
+            self._last_fwd_rel = n
             return n, n
+        ds = self._sh_depth.value
         if depth_map is not None:
             palm = palm_centre(obs_lm)  # depth always at the palm centre: the wrist point sits on the hand's
             dh = sample_patch(depth_map, palm)  # edge and its patch hits the background (replay: 0.9-1.4 m p99)
+            self.depth_hand = dh
             gap = np.hypot((palm[0] - sh_uv[0]) * self.aspect, palm[1] - sh_uv[1])
             if gap > 2.0 * f.scale * self.aspect + 2 * PATCH_RADIUS_FRAC:  # hand not over the shoulder
-                self._sh_depth.update(sample_patch(depth_map, sh_uv), t)
-            ds = self._sh_depth.value
-            if np.isfinite(dh) and np.isfinite(ds):
-                self._d_buf.append(dh - ds)
+                sample = sample_patch(depth_map, sh_uv)
+                if np.isfinite(sample):
+                    ds = self._sh_depth.update(sample, t)
+                    self._sh_depth_t = t
+            fresh = self._sh_depth_t is not None and t - self._sh_depth_t <= SH_DEPTH_MAX_AGE_S
+            d = dh - ds
+            if fresh and np.isfinite(d) and D_MIN_M <= d <= D_MAX_M:
+                if self._d_t is not None and t - self._d_t > COAST_S:
+                    self._d_buf.clear()  # don't median across a gap
+                self._d_buf.append(d)
+                self._d_t = t
                 self._d = float(np.median(self._d_buf))
-                self.depth_hand = dh
-        self.depth_shoulder = self._sh_depth.value
+                if self._d_home is None:
+                    self._home_samples.append((t, d))
+                    if self._home_ready(t):
+                        self._d_home = float(np.median([h[1] for h in self._home_samples]))
+        self.depth_shoulder = ds
         width = self._width_m.value
         if self._d is None or not np.isfinite(width) or width <= 0:
-            return 0.0, 0.0  # no depth yet: forward stays at home
-        if self._d_home is None:
-            self._d_home = self._d
-        return fwd_from_depth(self._d, self._d_home, width), fwd_from_depth(self._d, 0.0, width)
+            return self._fwd_offset, 0.0
+        n_abs = fwd_from_depth(self._d, 0.0, width)
+        n_rel = 0.0 if self._d_home is None else self.fwd_gain * fwd_from_depth(self._d, self._d_home, width)
+        self._last_fwd_rel = n_rel
+        return n_rel, n_abs
 
     def step(self, obs: HandObservation | None, t: float, pose_obs=None,
              depth_map: np.ndarray | None = None) -> tuple[np.ndarray, str]:
@@ -608,6 +669,7 @@ class ReachPipeline(_BodyPipeline):
         self.tracking_hold_reason = None
         self.reach_line_uv = None
         self.depth_hand = float("nan")
+        self.depth_shoulder = float("nan")
         self.last_features = None
         sample_dt = 1 / 60 if self._reach_sample_t is None else max(0.0, min(t - self._reach_sample_t, 0.05))
         self._reach_sample_t = t
