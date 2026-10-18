@@ -24,16 +24,31 @@ class Kinematics:
             for n in JOINTS
         ])
 
-    def fk(self, q: np.ndarray) -> tuple[np.ndarray, float]:
-        """Gripper site position in the base frame and approach pitch (rad, + = up)."""
+    def _site(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Gripper site position and approach axis, both in the base frame."""
         d = self._d
         d.qpos[:] = 0.0
         d.qpos[self._adr] = q
         mujoco.mj_kinematics(self._m, d)
         rb = d.site_xmat[self._base].reshape(3, 3)
         p = rb.T @ (d.site_xpos[self._grip] - d.site_xpos[self._base])
-        axis = rb.T @ d.site_xmat[self._grip].reshape(3, 3)[:, APPROACH_AXIS]
+        return p, rb.T @ d.site_xmat[self._grip].reshape(3, 3)[:, APPROACH_AXIS]
+
+    def fk(self, q: np.ndarray) -> tuple[np.ndarray, float]:
+        """Gripper site position in the base frame and approach pitch (rad, + = up)."""
+        p, axis = self._site(q)
         return p, float(np.arctan2(axis[2], np.hypot(axis[0], axis[1])))
+
+    def planar_pitch(self, q: np.ndarray) -> float:
+        """Signed approach angle in the arm's vertical plane (rad, + = up, in (-pi, pi]).
+
+        Equals fk's pitch while the gripper points forward, but keeps going past +-90 deg (fk's pitch folds
+        back there), so it is affine in wrist_flex with slope +-1 (mod 2 pi).
+        """
+        q = np.array(q, dtype=float)
+        q[0] = 0.0  # pan only turns the plane; at pan 0 the plane is x-z
+        _, axis = self._site(q)
+        return float(np.arctan2(axis[2], axis[0]))
 
     def _pose_vec(self, q):
         p, pitch = self.fk(q)
