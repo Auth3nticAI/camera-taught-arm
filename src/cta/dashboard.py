@@ -18,8 +18,11 @@ class Dashboard:
 
     def log_frame(self, rgb: np.ndarray | None, obs: HandObservation | None, twin_rgb: np.ndarray | None,
                   q_cmd: np.ndarray, fps: float, latency_ms: float, status: str,
-                  loop_ms: float | None = None, extra_rad: dict[str, np.ndarray] | None = None) -> None:
-        """Scalars/status every call; images only when rgb / twin_rgb are given (decimation)."""
+                  loop_ms: float | None = None, extra_rad: dict[str, np.ndarray] | None = None,
+                  arm_uv: np.ndarray | None = None) -> None:
+        """Scalars/status every call; images only when rgb / twin_rgb are given (decimation).
+
+        arm_uv: (3, 2) normalized image coords of the tracked arm's shoulder, elbow, wrist (--control arm)."""
         if rgb is not None:
             h, w = rgb.shape[:2]
             if w > LOG_WIDTH:
@@ -30,6 +33,12 @@ class Dashboard:
                 rr.log("camera/image/hand", rr.Points2D(obs.lm_img[:, :2] * np.array([w, h]), radii=4.0))
             else:
                 rr.log("camera/image/hand", rr.Clear(recursive=False))
+            if arm_uv is not None:
+                pts = np.asarray(arm_uv, dtype=float)[:, :2] * np.array([w, h])
+                rr.log("camera/image/arm", rr.LineStrips2D([pts], radii=3.0))
+                rr.log("camera/image/arm/joints", rr.Points2D(pts, radii=7.0))
+            else:
+                rr.log("camera/image/arm", rr.Clear(recursive=True))
         if twin_rgb is not None:
             rr.log("twin/image", rr.Image(twin_rgb))
         for i, name in enumerate(JOINTS):

@@ -1,4 +1,8 @@
-"""cta-mirror: webcam hand -> SO-101 twin (and later the real arm)."""
+"""cta-mirror: webcam arm + hand -> SO-101 twin / real arm.
+
+--control arm (default, decision D-O): the user's shoulder/elbow (MediaPipe Pose) drive the robot's
+shoulder and elbow joint for joint; the hand drives the wrist and gripper. --control hand: the hand alone
+drives the gripper position through IK (the original mode)."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from cta.arm_angles import side_indices
 from cta.camera import Camera, CameraMode, camera_check
 from cta.dashboard import Dashboard
 from cta.filters import OneEuro
@@ -16,7 +21,8 @@ from cta.hands import HandTracker
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
-from cta.pipeline import MirrorPipeline
+from cta.pipeline import ArmPosePipeline, MirrorPipeline
+from cta.pose import PoseTracker
 from cta.recorder import STATUS_CODES, STATUS_UNKNOWN, SessionRecorder, git_commit, next_take_name
 from cta.robot_io import FollowerArm, LeaderArm, clamp_margin, select_command
 from cta.twin import Twin
@@ -104,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--robot", choices=["none", "so101"], default="none")
     ap.add_argument("--follower-port", default=None, help="follower serial port, e.g. COM3 (--robot so101)")
     ap.add_argument("--leader-port", default=None, help="leader serial port (required for --mode paired)")
+    ap.add_argument("--control", choices=["arm", "hand"], default="arm",
+                    help="arm (default): your shoulder/elbow drive the robot's, hand drives wrist+gripper; "
+                         "hand: the hand alone drives the gripper position (IK)")
     ap.add_argument("--mode", choices=["mirror", "paired"], default="mirror",
                     help="mirror: camera drives the follower; paired: leader drives the follower, camera only logged")
     ap.add_argument("--max-speed-dps", type=float, default=90.0,
@@ -156,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
 
     wanted = CameraMode(1920, 1080, 60)
     cam = Camera(args.camera, wanted)
-    tracker = twin = None
+    tracker = pose_tracker = twin = None
     follower = leader = None
     keys = None
     rec: SessionRecorder | None = None
@@ -190,7 +199,11 @@ def main(argv: list[str] | None = None) -> int:
         gains = dataclasses.replace(gains, k_lat=gains.k_lat * args.gain, k_vert=gains.k_vert * args.gain,
                                     k_fwd=gains.k_fwd * args.gain)
         smoother = OneEuro(beta=args.smooth_beta)
-        pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
+        if args.control == "arm":
+            pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand)
+        else:
+            pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
+        print(f"control: {args.control}")
         prev = None
         last_meas = None
         stalled_frames = 0
@@ -204,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
         last_cmd_t = None
         tracker = HandTracker(models_dir() / "hand_landmarker.task", want=args.hand,
                               mirrored_input=args.mirrored)
+        if args.control == "arm":
+            pose_tracker = PoseTracker(models_dir() / "pose_landmarker_full.task")
         twin = Twin()
         dash = Dashboard()
         events: set[str] = set()
@@ -232,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                 "lerobot_calibration": {
                     "follower": getattr(follower, "calibration_info", lambda: None)(),
                     "leader": getattr(leader, "calibration_info", lambda: None)()},
-                "git_commit": git_commit(), "hand": args.hand, "mirrored": args.mirrored,
+                "git_commit": git_commit(), "hand": args.hand, "mirrored": args.mirrored, "control": args.control,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
             r = SessionRecorder(sessions_root, name, meta)
@@ -281,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             last_ok = time.perf_counter()
             obs = tracker.detect(rgb, t_frame)
+            pose_obs = pose_tracker.detect(rgb, t_frame) if pose_tracker is not None else None
             if "c" in events:
                 events.discard("c")
                 if obs is None:
@@ -319,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
                     rec = start_take()
                 else:
                     stop_take()
-            q, status = pipe.step(obs, t_frame)
+            q, status = pipe.step(obs, t_frame, pose_obs) if args.control == "arm" else pipe.step(obs, t_frame)
             q_baseline = q.copy()
             q_leader = None
             q_foll = None
@@ -374,7 +390,9 @@ def main(argv: list[str] | None = None) -> int:
             if rec is not None:
                 rec.add(t_frame, obs, pipe.last_features, q_baseline, q_leader, q_foll, rgb,
                         status=STATUS_CODES.get(status, STATUS_UNKNOWN),
-                        smoother_on=int(pipe.smoother is not None))
+                        smoother_on=int(pipe.smoother is not None),
+                        pose_img=None if pose_obs is None else pose_obs.img,
+                        pose_world=None if pose_obs is None else pose_obs.world)
             if bus_err is None:
                 consec_fail = 0
             else:
@@ -397,8 +415,12 @@ def main(argv: list[str] | None = None) -> int:
             n += 1
             heavy = n % 2 == 0  # twin render + images at most every 2nd frame
             twin_rgb = twin.render(q) if heavy else None
+            arm_uv = None
+            if heavy and pose_obs is not None and getattr(pipe, "side", None) is not None:
+                arm_uv = pose_obs.img[list(side_indices(pipe.side, args.mirrored)), :2]  # shoulder, elbow, wrist
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
-                           fps_ema, lat_ema, f"{status} REC" if rec is not None else status, loop_ema, extra_rad=extra)
+                           fps_ema, lat_ema, f"{status} REC" if rec is not None else status, loop_ema, extra_rad=extra,
+                           arm_uv=arm_uv)
             loop_ms = (time.perf_counter() - t_frame) * 1000  # frame read -> end of iteration
             loop_ema = loop_ms if loop_ema == 0.0 else 0.9 * loop_ema + 0.1 * loop_ms
             if args.max_frames and n >= args.max_frames:
@@ -423,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
         cam.close()
         if tracker is not None:
             tracker.close()
+        if pose_tracker is not None:
+            pose_tracker.close()
         if twin is not None:
             twin.close()
     return rc

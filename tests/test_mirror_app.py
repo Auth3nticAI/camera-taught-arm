@@ -47,6 +47,20 @@ class FakeTracker:
         pass
 
 
+class FakePose:
+    obs = None        # PoseObservation returned every frame (None = no body)
+    constructed = 0
+
+    def __init__(self, *a, **k):
+        FakePose.constructed += 1
+
+    def detect(self, rgb, t):
+        return FakePose.obs
+
+    def close(self):
+        pass
+
+
 class FakeTwin:
     def render(self, q):
         return np.zeros((4, 4, 3), np.uint8)
@@ -56,8 +70,11 @@ class FakeTwin:
 
 
 class FakeDash:
+    arm_points = []
+
     def log_frame(self, *a, **k):
-        pass
+        if k.get("arm_uv") is not None:
+            FakeDash.arm_points.append(k["arm_uv"])
 
 
 class FakeFollower:
@@ -115,9 +132,11 @@ class FakeLeader:
         closed.append("leader")
 
 
-def _run(monkeypatch, tmp_path, pose, leader, extra, map_file=True, fail=None, leader_fail=None, read_fail=None):
+def _run(monkeypatch, tmp_path, pose, leader, extra, map_file=True, fail=None, leader_fail=None, read_fail=None,
+         calib=None):
     for name, obj in [("Camera", FakeCam), ("HandTracker", FakeTracker), ("Twin", FakeTwin),
-                      ("Dashboard", FakeDash), ("FollowerArm", FakeFollower), ("LeaderArm", FakeLeader)]:
+                      ("Dashboard", FakeDash), ("FollowerArm", FakeFollower), ("LeaderArm", FakeLeader),
+                      ("PoseTracker", FakePose)]:
         monkeypatch.setattr(mirror, name, obj)
     monkeypatch.setattr(mirror, "_start_keys", lambda ev: None)
     monkeypatch.setenv("CTA_DATA_DIR", str(tmp_path))
@@ -125,6 +144,8 @@ def _run(monkeypatch, tmp_path, pose, leader, extra, map_file=True, fail=None, l
         (tmp_path / "sim_real_map.json").write_text(
             json.dumps({"sign": [1] * 5, "offset_deg": [0] * 5}))
     closed.clear()
+    FakeDash.arm_points.clear()
+    FakePose.constructed = 0
     FakeFollower.sent.clear()
     FakeFollower.calls = FakeFollower.reads = FakeLeader.calls = 0
     FakeFollower.fail = staticmethod(fail or (lambda n: n >= 4))
@@ -132,7 +153,7 @@ def _run(monkeypatch, tmp_path, pose, leader, extra, map_file=True, fail=None, l
     FakeLeader.fail = staticmethod(leader_fail or (lambda n: False))
     STATE.update(pose=pose, leader=leader)
     return mirror.main(["--robot", "so101", "--follower-port", "COM3", "--max-speed-dps", str(MAX_DPS),
-                        "--calib", str(tmp_path / "none.json"), *extra])
+                        "--calib", str(calib or tmp_path / "none.json"), *extra])
 
 
 def test_finally_closes_arms_and_paired_does_not_lunge(monkeypatch, tmp_path):
@@ -271,3 +292,52 @@ def test_servo_p_default_applied_on_connect(monkeypatch, tmp_path):
     _run(monkeypatch, tmp_path, REST, None, ["--max-frames", "3"], fail=lambda n: False)
     from cta.apps.mirror import DEFAULT_SERVO_P
     assert STATE["servo_p"] == DEFAULT_SERVO_P
+
+
+# ---- --control arm / hand ----------------------------------------------------------------------------
+
+def _save_cal(tmp_path):
+    from helpers import make_hand
+
+    from cta.features import compute_features
+    from cta.kinematics import Kinematics
+    from cta.mapping import calibrate, save_calibration
+    img, world = make_hand()
+    path = tmp_path / "cal.json"
+    save_calibration(calibrate(compute_features(img, world, 16 / 9), Kinematics()), path)
+    return path
+
+
+def test_control_hand_never_builds_pose_tracker(monkeypatch, tmp_path):
+    _run(monkeypatch, tmp_path, REST, None, ["--control", "hand", "--max-frames", "5"], fail=lambda n: False)
+    assert FakePose.constructed == 0
+    for q in FakeFollower.sent:
+        assert np.all(np.abs(q - REST) <= STEP)
+
+
+def test_control_arm_drives_shoulder_and_elbow(monkeypatch, tmp_path):
+    from helpers import bend, body_dir, make_body
+
+    from cta.pose import PoseObservation
+    from cta.recorder import load_session
+    a = body_dir(30, 80)
+    FakePose.obs = PoseObservation(*make_body(a, bend(a, 60)), 0.9)
+    STATE["clock"] = 0.0
+    STATE["deadband"] = 0.0  # the fake follower reaches each command, so the lead bound lets it move
+    try:
+        rc = _run(monkeypatch, tmp_path, REST, None,
+                  ["--max-frames", "120", "--record", "arm", "--autostart-record", "--hand", "left"],  # arm = default
+                  fail=lambda n: False, calib=_save_cal(tmp_path))
+    finally:
+        FakePose.obs = None
+        STATE["clock"] = STATE["deadband"] = None
+    assert rc == 0 and FakePose.constructed == 1
+    last = FakeFollower.sent[-1]
+    assert last[0] < REST[0] - 0.3          # pan swung toward -30 deg (user's arm to their left)
+    assert np.all(np.abs(np.diff(np.array(FakeFollower.sent), axis=0)) <= STEP)  # app speed limit intact
+    assert FakeDash.arm_points and np.asarray(FakeDash.arm_points[-1]).shape == (3, 2)
+    d = load_session(tmp_path / "sessions" / "arm_01")
+    assert np.isfinite(d["pose_world"]).all() and d["pose_img"].shape == (120, 33, 3)
+    assert (d["status"] == 2).all()  # TRACKING: pose present, hand missing
+    meta = json.loads((tmp_path / "sessions" / "arm_01" / "meta.json").read_text())
+    assert meta["control"] == "arm"
