@@ -1,6 +1,7 @@
 """Calibration and absolute same-side hand -> gripper target mapping."""
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,13 +87,29 @@ def _check(s0: float, closed: float, open_: float) -> None:
         raise ValueError("pinch_open and pinch_closed must differ")
 
 
+MIN_PINCH_SPAN = 0.15  # open and closed pinch readings must differ at least this much
+
+
 def calibrate(f: HandFeatures, kin: Kinematics) -> Calibration:
-    _check(f.scale, 0.25, 0.9)
+    """Home pose = the user's OPEN hand, so its pinch reading becomes 'fully open'."""
+    closed = Calibration.__dataclass_fields__["pinch_closed"].default
+    if f.pinch < closed + 0.2:
+        raise ValueError(f"open your hand when calibrating (pinch reading {f.pinch:.2f} is too small)")
+    _check(f.scale, closed, f.pinch)
     p0, pitch_home = kin.fk(READY_Q)
     return Calibration(
         u0=f.u, v0=f.v, s0=f.scale, pitch0=f.pitch, roll0=f.roll,
-        p0=np.asarray(p0, dtype=float), pitch_home=float(pitch_home),
+        p0=np.asarray(p0, dtype=float), pitch_home=float(pitch_home), pinch_open=float(f.pinch),
     )
+
+
+def set_pinch_closed(cal: Calibration, f: HandFeatures) -> Calibration:
+    """Record the user's own pinch (thumb + index together) as 'fully closed'."""
+    if f.pinch > cal.pinch_open - MIN_PINCH_SPAN:
+        raise ValueError(
+            f"pinch reading {f.pinch:.2f} is too close to your open hand ({cal.pinch_open:.2f}) - pinch tighter"
+        )
+    return dataclasses.replace(cal, pinch_closed=float(f.pinch))
 
 
 def map_to_target(

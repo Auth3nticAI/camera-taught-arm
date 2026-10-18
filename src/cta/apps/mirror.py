@@ -23,7 +23,7 @@ from cta.twin import Twin
 from cta.units import SimRealMap
 
 
-KEY_CHARS = "csrq"
+KEY_CHARS = "csrqp"
 MAX_CONSEC_BUS_FAILS = 15
 WARN_EVERY_S = 1.0
 
@@ -267,9 +267,24 @@ def main(argv: list[str] | None = None) -> int:
                 if obs is None:
                     print("cannot calibrate: no hand visible")
                 else:
-                    pipe.calibrate(obs)
-                    save_calibration(pipe.cal, calib_path)
-                    print(f"calibrated; saved to {calib_path}")
+                    try:
+                        pipe.calibrate(obs)
+                        save_calibration(pipe.cal, calib_path)
+                        print(f"calibrated (open hand = {pipe.cal.pinch_open:.2f}); saved to {calib_path}. "
+                              "Now pinch thumb+index and press 'p'.")
+                    except ValueError as e:
+                        print(f"cannot calibrate: {e}")
+            if "p" in events:
+                events.discard("p")
+                if obs is None:
+                    print("cannot set pinch: no hand visible")
+                else:
+                    try:
+                        pipe.set_pinch_closed(obs)
+                        save_calibration(pipe.cal, calib_path)
+                        print(f"pinch set: closed={pipe.cal.pinch_closed:.2f} open={pipe.cal.pinch_open:.2f}; saved")
+                    except ValueError as e:
+                        print(f"cannot set pinch: {e}")
             if "s" in events:
                 events.discard("s")
                 if pipe.smoother is None:

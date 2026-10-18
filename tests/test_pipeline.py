@@ -48,7 +48,8 @@ def test_step_rate_limits_joint_jumps(kin, gains):
     prev, _ = p.step(obs(), 0.0)
     q, status = p.step(obs(wrist_uv=(1.0, 0.5)), 0.01)  # u += 0.5
     assert status == "TRACKING"
-    assert np.max(np.abs(q - prev)) == pytest.approx(0.15)  # clamping kicked in
+    # arm joints only: the snap gripper has its own faster limit (GRIP_STEP_RAD)
+    assert np.max(np.abs(q[:5] - prev[:5])) == pytest.approx(0.15)  # clamping kicked in
 
 
 def test_step_outputs_within_limits(kin, gains):
@@ -80,3 +81,43 @@ def test_step_uncalibrated_still_records_features(kin, gains):
     assert p.last_features is not None
     p.step(None, 0.01)
     assert p.last_features is None
+
+
+def _calibrated(kin, gains, **kw):
+    p = MirrorPipeline(kin, None, gains, None, **kw)
+    p.calibrate(obs())  # open hand
+    return p
+
+
+def test_gripper_snaps_closed_and_open_with_hysteresis(kin, gains):
+    lo, hi = SIM_LIMITS[5]
+    p = _calibrated(kin, gains)
+    for i in range(6):
+        q, _ = p.step(obs(pinch_closed=True), 0.1 * (i + 1))
+    assert q[5] == pytest.approx(lo)  # fully closed within a few frames
+    for i in range(6):
+        q, _ = p.step(obs(), 1.0 + 0.1 * i)
+    assert q[5] == pytest.approx(hi)  # fully open again
+
+
+def test_gripper_holds_state_inside_deadzone(kin, gains):
+    from cta.pipeline import GRIP_CLOSE_FRAC, GRIP_OPEN_FRAC
+
+    assert GRIP_CLOSE_FRAC < GRIP_OPEN_FRAC
+    lo, hi = SIM_LIMITS[5]
+    p = _calibrated(kin, gains)
+    for i in range(6):
+        p.step(obs(pinch_closed=True), 0.1 * i)
+    mid = (GRIP_CLOSE_FRAC + GRIP_OPEN_FRAC) / 2  # inside the dead-zone: stays closed
+    assert p._grip_state(mid) is True
+
+
+def test_gripper_bypasses_arm_smoother(kin, gains):
+    from cta.filters import OneEuro
+
+    lo, _ = SIM_LIMITS[5]
+    p = _calibrated(kin, gains)
+    p.set_smoother(OneEuro(min_cutoff=0.05))  # very heavy arm smoothing
+    for i in range(6):
+        q, _ = p.step(obs(pinch_closed=True), 0.016 * (i + 1))
+    assert q[5] == pytest.approx(lo)  # gripper unaffected by the slow arm filter

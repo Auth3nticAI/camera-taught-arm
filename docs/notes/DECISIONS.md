@@ -83,6 +83,21 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Watch-out:** "take" can sound like video production, so always pair the name with the robotics descriptor.
 - **Outcome:** —
 
+### D-M · 2026-10-17 · Control hand
+- **Options:** right hand · left hand
+- **Choice:** **left hand**: run with `--hand left --mirrored`. The OBSBOT sends a mirrored image, which is why the default "right" setting was actually tracking the left hand.
+- **Why:** it tracked and felt better in the live test, and all six directions worked.
+- **Outcome:** —
+
+### D-N · 2026-10-17 · Gripper behaviour
+- **Options:** snap open/close · proportional · both with a toggle
+- **Choice:** **snap open/close**, with a dead-zone (closes below 35% of your pinch range, opens above 55%)
+- **Why:** proportional was laggy and inaccurate live. Snap is fast and reliable for picking blocks and gives clean training demos.
+- **Also:**
+  - the gripper now bypasses the arm smoothing filter;
+  - "open" is calibrated from your open hand when you press `c`, and "closed" from your own pinch when you press `p`.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)

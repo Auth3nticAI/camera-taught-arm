@@ -108,3 +108,23 @@ def test_roll_delta_wraps_across_pi():
     assert np.isclose(roll, np.radians(2.0), atol=1e-9)
     _, _, roll, _ = map_to_target(dataclasses.replace(home, roll=np.radians(177.0)), cal, _GAINS)
     assert np.isclose(roll, np.radians(-2.0), atol=1e-9)
+
+
+def test_calibrate_sets_pinch_open_from_home_hand():
+    cal = calibrate(dataclasses.replace(HOME, pinch=0.8), KIN)
+    assert cal.pinch_open == pytest.approx(0.8)
+
+
+def test_calibrate_rejects_closed_hand():
+    with pytest.raises(ValueError, match="open your hand"):
+        calibrate(dataclasses.replace(HOME, pinch=0.3), KIN)
+
+
+def test_set_pinch_closed_from_live_pinch():
+    from cta.mapping import set_pinch_closed
+
+    cal = calibrate(dataclasses.replace(HOME, pinch=0.8), KIN)
+    cal = set_pinch_closed(cal, dataclasses.replace(HOME, pinch=0.12))
+    assert cal.pinch_closed == pytest.approx(0.12)
+    with pytest.raises(ValueError):
+        set_pinch_closed(cal, dataclasses.replace(HOME, pinch=0.75))  # too close to open

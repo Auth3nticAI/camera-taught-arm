@@ -8,7 +8,13 @@ from cta.features import HandFeatures, compute_features
 from cta.filters import OneEuro
 from cta.hands import HandObservation
 from cta.kinematics import Kinematics
-from cta.mapping import Calibration, MapGains, calibrate, map_to_target
+from cta.mapping import Calibration, MapGains, calibrate, map_to_target, set_pinch_closed
+
+# Snap gripper (Tray's decision 2026-10-17): pinch fraction below CLOSE -> closed, above OPEN -> open,
+# in between keep the previous state (dead-zone stops flicker from noisy fingertip landmarks).
+GRIP_CLOSE_FRAC = 0.35
+GRIP_OPEN_FRAC = 0.55
+GRIP_STEP_RAD = 0.6  # per-frame gripper limit: full travel in ~4 frames, independent of the arm limit
 
 
 class MirrorPipeline:
@@ -22,6 +28,20 @@ class MirrorPipeline:
         self.aspect = aspect
         self.q_cmd = READY_Q.astype(float).copy()
         self.last_features: HandFeatures | None = None
+        self._grip_closed = False
+
+    def _grip_state(self, frac: float) -> bool:
+        """Hysteresis on the pinch fraction (0 = pinched, 1 = open hand); returns True if closed."""
+        if frac < GRIP_CLOSE_FRAC:
+            self._grip_closed = True
+        elif frac > GRIP_OPEN_FRAC:
+            self._grip_closed = False
+        return self._grip_closed
+
+    def set_pinch_closed(self, obs: HandObservation) -> None:
+        if self.cal is None:
+            raise ValueError("calibrate (open hand, 'c') before setting the pinch")
+        self.cal = set_pinch_closed(self.cal, self._features(obs))
 
     def reset_to(self, q: np.ndarray) -> None:
         """Seed the held command / IK warm start from the real pose."""
@@ -54,11 +74,15 @@ class MirrorPipeline:
         if not np.all(np.isfinite([*pos, pitch, roll, grip])):
             return self.q_cmd.copy(), "NO HAND"
         self.last_features = f
+        lo, hi = SIM_LIMITS[5]
+        grip = lo if self._grip_state((grip - lo) / (hi - lo)) else hi
         q = self.kin.ik(pos, pitch, self.q_cmd, roll, grip)
-        if self.smoother is not None:
-            q = np.asarray(self.smoother(q, t), dtype=float)
+        arm = q[:5]
+        if self.smoother is not None:  # arm joints only; the gripper must stay snappy
+            arm = np.asarray(self.smoother(arm, t), dtype=float)
         # note: smoother state tracks the unclamped target, not the rate-limited q_cmd
-        q = self.q_cmd + np.clip(q - self.q_cmd, -self.max_step_rad, self.max_step_rad)
-        q = np.clip(q, SIM_LIMITS[:, 0], SIM_LIMITS[:, 1])
+        arm = self.q_cmd[:5] + np.clip(arm - self.q_cmd[:5], -self.max_step_rad, self.max_step_rad)
+        g = self.q_cmd[5] + np.clip(grip - self.q_cmd[5], -GRIP_STEP_RAD, GRIP_STEP_RAD)
+        q = np.clip(np.append(arm, g), SIM_LIMITS[:, 0], SIM_LIMITS[:, 1])
         self.q_cmd = q
         return q.copy(), "TRACKING"
