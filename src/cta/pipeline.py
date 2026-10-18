@@ -27,6 +27,7 @@ TABLE_CLEARANCE_M = 0.005  # D-Q (Tray): lowest point of CLEARANCE_BODIES stays 
 CLEARANCE_PAD_M = 0.001   # added to every check: covers the fast contact model's optimism (below)
 # clearance checks the forearm and wrist too, not just the jaws (align.py's touch model stays jaws-only)
 CLEARANCE_BODIES = ("gripper", "moving_jaw_so101_v1", "wrist", "lower_arm")
+CART_CLEAR_TOL_M = 0.001  # reach mode: Cartesian clearance lands within 1 mm above the floor
 POSE_MIN_VIS = 0.5     # arm mode: tracked-arm + shoulder landmarks need min(visibility, presence) >= this
 HAND_ENGAGE_S = 1.0    # arm mode: the body drives the robot only if the hand was seen this recently
 CLEARANCE_DIRS = 500   # extreme-vertex directions: lowest_z ~0.1 ms; <= ~0.8 mm optimistic (reviewer
@@ -141,6 +142,10 @@ def _bisect_joint(q: np.ndarray, joint: int, safe: float, ok, iters: int) -> np.
             bad = out[joint]
     out[joint] = good
     return out
+
+
+def _wrap(a: float) -> float:
+    return float((a + np.pi) % (2 * np.pi) - np.pi)
 
 
 def _floor(contact, margin: float) -> float:
@@ -409,7 +414,80 @@ class ReachPipeline(_BodyPipeline):
         self.raw_target: np.ndarray | None = None
         self.target: np.ndarray | None = None
         self.pitch_target = NO_HAND_PITCH_RAD
+        self.ik_target: np.ndarray | None = None  # target after the Cartesian clearance raise
+        self.roll_target = 0.0
         self._hand_pitch: float | None = None
+        self._roll_u: float | None = None  # unwrapped hand roll (for wrap-aware smoothing)
+        self._roll_filter: OneEuro | None = None
+        self._roll_filter_src: OneEuro | None = None
+
+    def reset_to(self, q: np.ndarray) -> None:
+        super().reset_to(q)
+        self._roll_filter = None
+
+    def _smooth_roll(self, roll: float, t: float) -> float:
+        """Wrap-aware roll smoothing: One Euro on the unwrapped roll, wrapped back to [-pi, pi)."""
+        self._roll_u = roll if self._roll_u is None else self._roll_u + _wrap(roll - self._roll_u)
+        if self.smoother is None:
+            return _wrap(self._roll_u)
+        if self._roll_filter is None or self._roll_filter_src is not self.smoother:
+            s = self.smoother
+            self._roll_filter = OneEuro(min_cutoff=s.min_cutoff, beta=s.beta, d_cutoff=s.d_cutoff)
+            self._roll_filter_src = s
+        return _wrap(float(self._roll_filter(np.array([self._roll_u]), t)[0]))
+
+    def _ik_clear(self, target: np.ndarray, pitch: float, q_init: np.ndarray, roll: float,
+                  grip: float) -> tuple[np.ndarray, np.ndarray]:
+        """IK, keeping table clearance in CARTESIAN space: if the solution would put the arm below
+        table + margin (+ pad), raise only the target's z by bisection (x, y, pitch kept) until the lowest
+        point sits just above it (CART_CLEAR_TOL_M). If even the box top can't clear, the plain solution is
+        returned and clear_table / hold handles it. -> (q, the target actually solved for)."""
+        q = self.kin.ik(target, pitch, q_init, roll, grip)
+        if _clears(q, self.contact, self.table_margin):
+            return q, target
+        floor = _floor(self.contact, self.table_margin)
+        # secant steps first: the lowest point rises roughly linearly with the target z (slope ~1 at first,
+        # then measured), so 1-3 IK solves usually land within tolerance; bisection below is the fallback
+        aim = floor + CART_CLEAR_TOL_M / 2
+        qn, zn, low = q, float(target[2]), self.contact.lowest_z(q)
+        prev_t = self.ik_target
+        if prev_t is not None and prev_t[2] > zn and np.linalg.norm(prev_t[:2] - target[:2]) < 0.02:
+            # temporal coherence: start from last frame's raised height (steady state: 2 IK solves)
+            tn = target.copy()
+            tn[2] = min(float(prev_t[2]), float(self.box_max[2]))
+            q0 = self.kin.ik(tn, pitch, q_init, roll, grip)
+            low0 = self.contact.lowest_z(q0)
+            if floor <= low0 <= floor + CART_CLEAR_TOL_M:
+                return q0, tn
+            qn, zn, low = q0, float(tn[2]), low0
+        slope = 1.0
+        for _ in range(4):
+            z_new = min(zn + (aim - low) / slope, float(self.box_max[2]))
+            tn = target.copy()
+            tn[2] = z_new
+            q_new = self.kin.ik(tn, pitch, qn, roll, grip)
+            low_new = self.contact.lowest_z(q_new)
+            if floor <= low_new <= floor + CART_CLEAR_TOL_M:
+                return q_new, tn
+            if abs(z_new - zn) > 1e-6:
+                slope = float(np.clip((low_new - low) / (z_new - zn), 0.3, 3.0))
+            qn, zn, low = q_new, z_new, low_new
+        lo, hi = float(target[2]), float(self.box_max[2])
+        up = target.copy()
+        up[2] = hi
+        q_hi = self.kin.ik(up, pitch, q, roll, grip)
+        if not _clears(q_hi, self.contact, self.table_margin):
+            return q, target
+        best_t = up.copy()
+        while hi - lo > CART_CLEAR_TOL_M:
+            mid = target.copy()
+            mid[2] = (lo + hi) / 2
+            qm = self.kin.ik(mid, pitch, q_hi, roll, grip)
+            if _clears(qm, self.contact, self.table_margin):
+                hi, q_hi, best_t = mid[2], qm, mid
+            else:
+                lo = mid[2]
+        return q_hi, best_t
 
     def step(self, obs: HandObservation | None, t: float, pose_obs=None) -> tuple[np.ndarray, str]:
         early, g = self._gate(obs, t, pose_obs)
@@ -434,11 +512,12 @@ class ReachPipeline(_BodyPipeline):
             _, pitch, roll, grip = g.hand
             self._hand_pitch = self._smooth_pitch(pitch, t)
             self.pitch_target = self._hand_pitch
-            roll, grip = float(np.clip(roll, *SIM_LIMITS[4])), self._snap_grip(grip)
+            self.roll_target = self._smooth_roll(roll, t)
+            roll, grip = float(np.clip(self.roll_target, *SIM_LIMITS[4])), self._snap_grip(grip)
         else:  # brief dropout: keep the hand's pitch; longer: a natural ~45 deg down. Roll + gripper hold.
             recent = self._hand_pitch is not None and t - self._hand_seen_t <= COAST_S
             self.pitch_target = self._hand_pitch if recent else NO_HAND_PITCH_RAD
             roll, grip = prev[4], prev[5]
-        q = self.kin.ik(target, self.pitch_target, prev, roll, grip)
+        q, self.ik_target = self._ik_clear(target, self.pitch_target, prev, roll, grip)
         out = self._finish(q[:5], grip, t, smooth=False).copy()
         return self._clear_or_hold(out, prev)

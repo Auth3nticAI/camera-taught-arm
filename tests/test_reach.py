@@ -141,8 +141,10 @@ def test_gripper_lands_on_target(kin, gains, contact, az, elev, flex):
     q, s = run(p, hand(po), po)
     assert s == "TRACKING"
     assert np.all(p.target >= p.box_min - 1e-9) and np.all(p.target <= p.box_max + 1e-9)
-    if contact.lowest_z(q) > contact.table_z + TABLE_CLEARANCE_M + CLEARANCE_PAD_M + 1e-3:  # clearance idle
-        assert np.linalg.norm(kin.fk(q)[0] - p.target) < 0.01
+    pos = kin.fk(q)[0]
+    assert np.linalg.norm(pos - p.ik_target) < 0.01           # lands on the (clearance-adjusted) IK target
+    assert np.linalg.norm(pos[:2] - p.target[:2]) < 0.01      # and x, y are where the user reached
+    assert p.ik_target[2] >= p.target[2] - 1e-9              # clearance only ever raises z
 
 
 def test_reach_left_goes_to_robot_left(kin, gains):
@@ -264,3 +266,31 @@ def test_table_margin_floor(kin, gains, contact):
     q, _ = run(p, hand(po), po)
     assert p.target[2] >= contact.table_z + big + CLEARANCE_PAD_M - 1e-9
     assert contact.lowest_z(q) >= contact.table_z + big + CLEARANCE_PAD_M - 1e-3
+
+
+
+def test_reach_to_table_gets_the_jaws_down_to_the_margin(kin, gains, contact):
+    """Picking a ~2.5 cm block: near the table, clearance raises the TARGET (x, y kept), not the shoulder."""
+    p = calibrated(kin, gains)
+    po = pose(0, 120, 30)  # reaching down-forward to the table
+    q, s = run(p, hand(po), po, n=120)
+    assert s == "TRACKING"
+    pos = kin.fk(q)[0]
+    assert np.linalg.norm(pos[:2] - p.target[:2]) < 0.01
+    clearance = contact.lowest_z(q) - contact.table_z  # exact meshes
+    assert TABLE_CLEARANCE_M <= clearance <= TABLE_CLEARANCE_M + 0.003
+
+
+def test_roll_is_smoothed_and_wrap_aware(kin, gains):
+    from cta.filters import OneEuro
+    p = calibrated(kin, gains)
+    p.set_smoother(OneEuro(min_cutoff=0.5, beta=0.0))
+    po = pose(0, 45, 90)
+    outs = []
+    for i in range(60):  # jitter +-0.1 rad around 0.4
+        q, _ = p.step(hand(po, roll=0.4 + (0.1 if i % 2 else -0.1)), i / 60, po)
+        outs.append(p.roll_target)
+    assert np.ptp(outs[-20:]) < 0.05  # much less than the 0.2 rad input jitter
+    for i in range(60):  # jitter across the +-pi wrap: must not average to ~0
+        q, _ = p.step(hand(po, roll=np.pi - 0.05 if i % 2 else -np.pi + 0.05), 1.0 + i / 60, po)
+    assert abs(p.roll_target) > 3.0
