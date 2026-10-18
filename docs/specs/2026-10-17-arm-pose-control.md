@@ -28,14 +28,15 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
 - `left` = the user's left: normalize(L_shoulder − R_shoulder), orthogonalized against `up`.
 - `fwd` = out of the user's chest: normalize(cross(left, up)). Flip the sign if needed so that `fwd · (0, 0, −1) > 0` (the chest faces the camera, and camera z points away).
 - If the image was mirrored (`--mirrored`), MediaPipe's L/R world landmarks are the anatomical mirror image. Correct this so that `left` always points to the user's true left. Unit-test with a synthetic mirrored body.
+- *As built (2026-10-17):* mirrored landmarks are **un-mirrored first** (image x → 1−x, world x → −x, and the left/right landmark labels swapped: 11↔12, 13↔14, 15↔16, 23↔24, …), so everything downstream sees an unmirrored user. After `fwd` is fixed to face the camera, `left` is **re-derived as cross(up, fwd)**: that is the user's true left even if Pose swaps its shoulder labels, and keeps the frame right-handed.
 
 ## Joint angles (the user's arm → robot joints)
 
 `a` = elbow − shoulder (upper arm); `b` = wrist − elbow (forearm).
 
 **Robot shoulder_lift** = elevation of the upper arm from vertical:
-- `lift = arccos(a·up / |a|)`, so 0 = arm straight up and +90° = horizontal.
-- Robot convention (verified): `shoulder_lift` 0 = upper arm vertical, +90° = upper arm forward horizontal.
+- `lift = arccos(a·up / |a|) − LIFT_OFFSET`, so the robot's upper arm points where the user's does.
+- Robot convention (**corrected 2026-10-17**, measured from the MuJoCo joint anchors, shoulder_lift → elbow_flex axis): `shoulder_lift` 0 tilts the upper arm **13.97° forward of vertical**, +90° = 13.97° below forward horizontal. So `LIFT_OFFSET = 13.97°`: arm straight up → lift ≈ −14°, arm forward horizontal → lift ≈ 76°. (The original "0 = vertical, +90 = horizontal" was approximate; with it the robot arm sat 14° lower than the user's.)
 - Clamp to joint limits via the existing margin clamp.
 
 **Robot shoulder_pan** = azimuth of the upper arm toward the user's left:
@@ -46,10 +47,13 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
 **Robot elbow_flex:**
 - Human flexion = angle between `a` and `b` (0 = straight, 180 = fully folded).
 - Robot elbow 0 = forearm perpendicular to the upper arm (verified: lift 0 + elbow 0 = upper arm up, forearm forward; elbow +90 = folded down; elbow −90 = straight).
-- Therefore `elbow = flexion − 90°`.
+- **Corrected 2026-10-17** (MuJoCo joint anchors, elbow_flex → wrist_flex axis): at elbow 0 the forearm is bent **73.82°** from the upper-arm line, not 90° (the upper arm's 14° tilt; the forearm is ~horizontal). Elbow −73.8° is straight; −90° is 16° hyperextended.
+- Therefore `elbow = flexion − ELBOW_OFFSET`, `ELBOW_OFFSET = 73.82°`: straight arm → −73.8°, 90° bend → +16.2°.
+- A test checks the robot's upper arm and forearm directions (FK joint anchors) match the synthetic user's arm within 1° for several poses (pan sign included).
 
 **Robot wrist_flex:** keep the hand-mode semantics. The gripper's world approach pitch should equal `pitch_home + (hand_pitch − pitch0)` (from the existing Calibration).
 - Given the lift and elbow above, find `wrist_flex` so that `Kinematics.fk(q)[1]` matches. In this planar chain, world pitch is affine in wrist_flex with slope ±1, so evaluate FK at two wrist values to get the slope sign and offset, then solve.
+- *As built:* `fk`'s pitch folds back past ±90° (it uses hypot for the horizontal part), so it is not affine everywhere. The solve uses the new `Kinematics.planar_pitch(q)` (signed angle in the arm plane, equal to fk's pitch while the gripper points forward), wrapped to ±180°, then clipped to the wrist limits.
 - If there is no hand or calibration: hold the previous wrist_flex.
 
 **Robot wrist_roll and gripper:** exactly as in hand mode (wrapped roll delta; snap gripper with hysteresis, calibrated via `c` and `p`).
@@ -57,6 +61,7 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
 ## Safety (in addition to everything that already applies)
 
 1. **Table clearance:** after computing q, if the lowest gripper/jaw point (`cta.align.ContactModel.lowest_z`) is below `table_z + 0.02` m, move shoulder_lift toward 0 (raise the arm) by bisection until it's at least 0.02 m above. Unit-test it.
+   - *Added 2026-10-17:* lift 0 alone does not always clear (e.g. lift 0, elbow +40°, wrist +60°: jaws 2 cm below the table). Then lift is set to 0 and elbow_flex is bisected toward straight-up (−73.8°), which always clears. Applied to the final command each frame (after the rate limit), so it can exceed the per-frame step on lift/elbow, always in the raising direction.
 2. The same pipeline rate limit, smoother (arm joints only), joint-limit clip, COAST (< 0.15 s) and NO HAND hold semantics as `MirrorPipeline`. **No pose = NO HAND / COAST.** Hand missing but pose present: shoulder and elbow still follow, while wrist and gripper hold their last values (status `TRACKING`).
 3. The mirror app's send path is untouched: lead bound, speed limit, measured-pose seed, stall warning.
 
@@ -87,6 +92,7 @@ Add a control mode where the user's own **shoulder and elbow** drive the robot's
   - Arm out to the user's left, horizontal → pan ≈ −90° (robot pan; gripper to the robot's left).
   - Arm hanging down → pan held from the previous value.
   - Elbow straight → elbow ≈ −90°; elbow at 90° → ≈ 0.
+  - *As built, with the measured offsets:* straight up → lift ≈ −14.0°, forward horizontal → ≈ 76.0°, elbow straight → ≈ −73.8°, elbow at 90° → ≈ +16.2° (each equals the robot arm pointing the same way as the user's).
 - The mirrored-image version of the same body gives the same robot angles.
 - `choose_arm_side` picks the side nearest the hand wrist, regardless of labels.
 - Table clearance raises the arm when the target is below the table.
