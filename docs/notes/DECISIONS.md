@@ -108,6 +108,12 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
   - roughly 25–30 fps with both trackers running.
 - **Outcome:** —
 
+### D-P · 2026-10-17 · Arm-pose safety rules (Claude's rulings for Tray to confirm)
+- **Engagement:** in arm mode, the body alone only moves the robot if your **hand was seen in the last 1.0 s**. Otherwise the robot holds. This stops passers-by or a half-visible body from driving the arm.
+- **Visibility gating:** pose points MediaPipe is unsure of (visibility below 0.5, adjustable with `--pose-min-vis`) count as "no pose". If the hips are hidden behind the desk, the app falls back to the camera's vertical.
+- **Sent-path table clearance:** every command actually sent to the arm is checked against the table, not just the final target. A review simulation showed intermediate commands up to 19 cm below the table without this.
+- **Cost if wrong:** the arm is slightly more conservative (holds more often). Tray can relax the rules after live testing.
+
 ---
 
 ## Open (waiting for Tray)
