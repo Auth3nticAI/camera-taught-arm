@@ -48,3 +48,12 @@
 - **Acceptance:** zero side switches after `c`, and per-frame target jumps p99 ≤ 1.5 cm and max ≤ 4 cm on TRACKING frames (the smoothing and rate limit allowed). If that isn't met, report the numbers honestly with the residual cause. **Don't loosen the acceptance or add holds to hide it.**
 - Unit tests (TDD): side lock; mirrored/unmirrored direction; depth fallback; patch sampling robust to NaN or edges; the home-relative target.
 - The full suite stays green.
+
+## As built (2026-10-18)
+
+- **Lock:** `ReachPipeline.calibrate(obs, pose_obs)` locks via `choose_arm_side` (un-mirrored); if 'c' sees no body, it locks on the next frame with both hand and pose. `locked_side` changes only on the next 'c'. Gating: both shoulders >= `--pose-min-vis` (the second one feeds the scale); the other arm's landmarks are ignored.
+- **Hand point:** the wrist (`HAND_POINT = "wrist"`): replay gave a lower smoothed p99 and fewer > 3 cm frames than the palm centre in all four takes. Depth is always sampled at the palm centre: at the wrist, the patch hit the background (hand depth jumped 0.9-1.4 m p99 per frame).
+- **Depth:** `src/cta/depth.py`, `DepthEstimator` (lazy, CUDA fp16, GPU resize to 518 px height = the model's training size; ~9 ms/frame in replay). `d` = median of the last 3 (hand - shoulder) samples (`DEPTH_MEDIAN_FRAMES`). Shoulder depth = 0.5 s median, not sampled while the hand covers the shoulder (2 x hand scale + patch). `--depth model|none`, `--depth-every 1|2` (default 1). In the app, depth runs on a worker thread overlapped with MediaPipe.
+- **Fallback:** `fwd_from_hand_scale`, pinhole with an assumed focal length of 1.2 image heights. It is far noisier than depth on the recordings (rotation foreshortens the 2-D hand scale).
+- **Removed** (made obsolete by the lock / hand-tracker "where"): arm-identity hold, wrist-disagreement hold, 3-D reach jump hold, 3-frame reacquisition, clutch rebase on recovery, `reach_vector` / `ArmLength`. **Kept:** shoulder out of view / span / teleport checks (teleport allowance 0.08 + 0.8 * dt since the last good shoulders, uncapped, so it can't hold forever), the 0.25 m/s target speed limit, the 90 deg/s joint bound, clearance, and all app guards.
+- **Proof:** see LAB_NOTEBOOK 2026-10-18 "Reach measurement fix". Acceptance is met at the final target, but the speed limit guarantees that for OLD and NEW alike. Before the speed limit, NEW misses p99 <= 1.5 / max <= 4 cm (residual: depth drift on the forward axis, and real fast motion at 24 fps).
