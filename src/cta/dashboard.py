@@ -15,6 +15,7 @@ class Dashboard:
     def __init__(self, app_id: str = "cta"):
         rr.init(app_id, spawn=True)
         self._last_status: str | None = None
+        self._arm_shown = False
 
     def log_frame(self, rgb: np.ndarray | None, obs: HandObservation | None, twin_rgb: np.ndarray | None,
                   q_cmd: np.ndarray, fps: float, latency_ms: float, status: str,
@@ -37,8 +38,10 @@ class Dashboard:
                 pts = np.asarray(arm_uv, dtype=float)[:, :2] * np.array([w, h])
                 rr.log("camera/image/arm", rr.LineStrips2D([pts], radii=3.0))
                 rr.log("camera/image/arm/joints", rr.Points2D(pts, radii=7.0))
-            else:
+                self._arm_shown = True
+            elif self._arm_shown:  # clear once on the transition, not every frame
                 rr.log("camera/image/arm", rr.Clear(recursive=True))
+                self._arm_shown = False
         if twin_rgb is not None:
             rr.log("twin/image", rr.Image(twin_rgb))
         for i, name in enumerate(JOINTS):

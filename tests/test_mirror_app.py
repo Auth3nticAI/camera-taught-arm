@@ -37,11 +37,13 @@ class FakeCam:
 
 
 class FakeTracker:
+    obs = None  # HandObservation returned every frame (None = no hand)
+
     def __init__(self, *a, **k):
         pass
 
     def detect(self, rgb, t):
-        return None
+        return FakeTracker.obs
 
     def close(self):
         pass
@@ -318,18 +320,22 @@ def test_control_hand_never_builds_pose_tracker(monkeypatch, tmp_path):
 def test_control_arm_drives_shoulder_and_elbow(monkeypatch, tmp_path):
     from helpers import bend, body_dir, make_body
 
+    from helpers import make_hand
+
+    from cta.hands import HandObservation
     from cta.pose import PoseObservation
     from cta.recorder import load_session
-    a = body_dir(30, 80)
-    FakePose.obs = PoseObservation(*make_body(a, bend(a, 60)), 0.9)
+    a = body_dir(30, 60)
+    FakePose.obs = PoseObservation(*make_body(a, bend(a, 40)), 0.9)
+    FakeTracker.obs = HandObservation(*make_hand(wrist_uv=tuple(FakePose.obs.img[15, :2])), "left", 0.9)
     STATE["clock"] = 0.0
     STATE["deadband"] = 0.0  # the fake follower reaches each command, so the lead bound lets it move
     try:
         rc = _run(monkeypatch, tmp_path, REST, None,
-                  ["--max-frames", "120", "--record", "arm", "--autostart-record", "--hand", "left"],  # arm = default
+                  ["--max-frames", "120", "--record", "arm", "--autostart-record", "--hand", "left", "--pose-min-vis", "0.5"],  # arm = default
                   fail=lambda n: False, calib=_save_cal(tmp_path))
     finally:
-        FakePose.obs = None
+        FakePose.obs = FakeTracker.obs = None
         STATE["clock"] = STATE["deadband"] = None
     assert rc == 0 and FakePose.constructed == 1
     last = FakeFollower.sent[-1]
@@ -338,6 +344,7 @@ def test_control_arm_drives_shoulder_and_elbow(monkeypatch, tmp_path):
     assert FakeDash.arm_points and np.asarray(FakeDash.arm_points[-1]).shape == (3, 2)
     d = load_session(tmp_path / "sessions" / "arm_01")
     assert np.isfinite(d["pose_world"]).all() and d["pose_img"].shape == (120, 33, 3)
-    assert (d["status"] == 2).all()  # TRACKING: pose present, hand missing
+    assert (d["status"] == 2).all()  # TRACKING: pose + hand
+    assert d["pose_world"].dtype == np.float32
     meta = json.loads((tmp_path / "sessions" / "arm_01" / "meta.json").read_text())
     assert meta["control"] == "arm"

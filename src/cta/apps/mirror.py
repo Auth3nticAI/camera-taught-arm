@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from cta.arm_angles import side_indices
@@ -21,7 +22,7 @@ from cta.hands import HandTracker
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
-from cta.pipeline import ArmPosePipeline, MirrorPipeline
+from cta.pipeline import POSE_MIN_VIS, ArmPosePipeline, MirrorPipeline, clearance_model, guard_clearance
 from cta.pose import PoseTracker
 from cta.recorder import STATUS_CODES, STATUS_UNKNOWN, SessionRecorder, git_commit, next_take_name
 from cta.robot_io import FollowerArm, LeaderArm, clamp_margin, select_command
@@ -40,6 +41,29 @@ DEFAULT_GAIN = 1.5        # scales hand motion -> arm motion (1.0 = 30 cm of arm
 DEFAULT_SMOOTH_BETA = 0.05  # One Euro beta: higher = less lag when moving (LeRobot-agnostic; 0.007 was laggy)
 MAX_CONSEC_BUS_FAILS = 15
 WARN_EVERY_S = 1.0
+
+
+INFER_WIDTH = 1280  # the frame is downscaled once to this width and shared by the hand and pose trackers
+
+
+def next_command(mode: str, status: str, q: np.ndarray, q_leader: np.ndarray | None, prev: np.ndarray,
+                 dt: float, max_speed: float, q_foll: np.ndarray | None, contact) -> np.ndarray:
+    """The command to send this frame: speed limit, lead bound over the measured pose, then (camera-driven
+    mirror mode only) table clearance of the command itself - the per-joint ramp toward a clear target can
+    pass through poses that are not (review 2026-10-17). Paired teleop is not guarded: the leader may touch."""
+    q_new = select_command(mode, status, q, q_leader, prev, dt, max_speed)
+    if q_foll is not None:
+        q_new = np.clip(q_new, q_foll - MAX_LEAD_RAD, q_foll + MAX_LEAD_RAD)
+    if contact is not None and mode == "mirror":
+        q_new = guard_clearance(q_new, prev, contact)
+    return q_new
+
+
+def _infer_frame(rgb: np.ndarray) -> np.ndarray:
+    h, w = rgb.shape[:2]
+    if w <= INFER_WIDTH:
+        return rgb
+    return cv2.resize(rgb, (INFER_WIDTH, round(h * INFER_WIDTH / w)), interpolation=cv2.INTER_AREA)
 
 
 def dispatch_keys(chars, events: set[str]) -> None:
@@ -113,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--control", choices=["arm", "hand"], default="arm",
                     help="arm (default): your shoulder/elbow drive the robot's, hand drives wrist+gripper; "
                          "hand: the hand alone drives the gripper position (IK)")
+    ap.add_argument("--pose-min-vis", type=float, default=POSE_MIN_VIS,
+                    help=f"--control arm: min visibility/presence of the tracked arm + shoulders (default {POSE_MIN_VIS})")
     ap.add_argument("--mode", choices=["mirror", "paired"], default="mirror",
                     help="mirror: camera drives the follower; paired: leader drives the follower, camera only logged")
     ap.add_argument("--max-speed-dps", type=float, default=90.0,
@@ -200,9 +226,12 @@ def main(argv: list[str] | None = None) -> int:
                                     k_fwd=gains.k_fwd * args.gain)
         smoother = OneEuro(beta=args.smooth_beta)
         if args.control == "arm":
-            pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand)
+            pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
+                                   pose_min_vis=args.pose_min_vis)
+            contact = pipe.contact  # one MuJoCo contact model, shared with the send-path clearance check
         else:
             pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
+            contact = clearance_model() if follower is not None else None
         print(f"control: {args.control}")
         prev = None
         last_meas = None
@@ -295,8 +324,9 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(0.005)
                 continue
             last_ok = time.perf_counter()
-            obs = tracker.detect(rgb, t_frame)
-            pose_obs = pose_tracker.detect(rgb, t_frame) if pose_tracker is not None else None
+            small = _infer_frame(rgb)  # resized once, shared by both trackers
+            obs = tracker.detect(small, t_frame)
+            pose_obs = pose_tracker.detect(small, t_frame) if pose_tracker is not None else None
             if "c" in events:
                 events.discard("c")
                 if obs is None:
@@ -372,9 +402,7 @@ def main(argv: list[str] | None = None) -> int:
                         print("WARNING: arm is not moving toward its commands - check the follower's 12 V "
                               "motor power supply (motors only read on USB power)")
                 if not skip_send:
-                    q_new = select_command(args.mode, status, q, q_leader, prev, dt, max_speed)
-                    if q_foll is not None:
-                        q_new = np.clip(q_new, q_foll - MAX_LEAD_RAD, q_foll + MAX_LEAD_RAD)
+                    q_new = next_command(args.mode, status, q, q_leader, prev, dt, max_speed, q_foll, contact)
                     try:
                         sent = follower.send(q_new)
                         prev = q_new
