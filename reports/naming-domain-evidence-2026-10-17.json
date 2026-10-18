@@ -1,0 +1,173 @@
+[
+  {
+    "domain": "takeworthy.com",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://rdap.verisign.com/com/v1/domain/takeworthy.com",
+    "checked_utc": "2026-10-18T00:22:57.061779+00:00"
+  },
+  {
+    "domain": "takeworthy.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/takeworthy.dev",
+    "checked_utc": "2026-10-18T00:22:57.017221+00:00"
+  },
+  {
+    "domain": "takeworthy.ai",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://rdap.identitydigital.services/rdap/domain/takeworthy.ai",
+    "checked_utc": "2026-10-18T00:22:57.181027+00:00"
+  },
+  {
+    "domain": "motorkin.com",
+    "http": 200,
+    "finding": "registration_record_found",
+    "source": "https://rdap.verisign.com/com/v1/domain/motorkin.com",
+    "ldhName": "MOTORKIN.COM",
+    "checked_utc": "2026-10-18T00:22:57.062779+00:00"
+  },
+  {
+    "domain": "motorkin.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/motorkin.dev",
+    "checked_utc": "2026-10-18T00:22:57.040879+00:00"
+  },
+  {
+    "domain": "motorkin.ai",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://rdap.identitydigital.services/rdap/domain/motorkin.ai",
+    "checked_utc": "2026-10-18T00:22:57.251113+00:00"
+  },
+  {
+    "domain": "mimewire.com",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://rdap.verisign.com/com/v1/domain/mimewire.com",
+    "checked_utc": "2026-10-18T00:22:57.226559+00:00"
+  },
+  {
+    "domain": "mimewire.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/mimewire.dev",
+    "checked_utc": "2026-10-18T00:22:57.365780+00:00"
+  },
+  {
+    "domain": "mimewire.ai",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://rdap.identitydigital.services/rdap/domain/mimewire.ai",
+    "checked_utc": "2026-10-18T00:22:57.279201+00:00"
+  },
+  {
+    "domain": "fieldstitch.com",
+    "http": 200,
+    "finding": "registration_record_found",
+    "source": "https://rdap.verisign.com/com/v1/domain/fieldstitch.com",
+    "ldhName": "FIELDSTITCH.COM",
+    "checked_utc": "2026-10-18T00:22:57.587765+00:00"
+  },
+  {
+    "domain": "fieldstitch.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/fieldstitch.dev",
+    "checked_utc": "2026-10-18T00:22:57.439093+00:00"
+  },
+  {
+    "domain": "fieldstitch.ai",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://rdap.identitydigital.services/rdap/domain/fieldstitch.ai",
+    "checked_utc": "2026-10-18T00:22:57.522129+00:00"
+  },
+  {
+    "domain": "motionyield.com",
+    "http": 200,
+    "finding": "registration_record_found",
+    "source": "https://rdap.verisign.com/com/v1/domain/motionyield.com",
+    "ldhName": "MOTIONYIELD.COM",
+    "checked_utc": "2026-10-18T00:22:57.522129+00:00"
+  },
+  {
+    "domain": "motionyield.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/motionyield.dev",
+    "checked_utc": "2026-10-18T00:22:57.550442+00:00"
+  },
+  {
+    "domain": "motionyield.ai",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://rdap.identitydigital.services/rdap/domain/motionyield.ai",
+    "checked_utc": "2026-10-18T00:22:57.659997+00:00"
+  },
+  {
+    "domain": "skillorchard.com",
+    "http": 200,
+    "finding": "registration_record_found",
+    "source": "https://rdap.verisign.com/com/v1/domain/skillorchard.com",
+    "checked_utc": "2026-10-18T00:23:31.239946+00:00"
+  },
+  {
+    "domain": "skillorchard.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/skillorchard.dev",
+    "checked_utc": "2026-10-18T00:23:31.452584+00:00"
+  },
+  {
+    "domain": "skillorchard.ai",
+    "http": 403,
+    "finding": "unresolved",
+    "source": "https://rdap.identitydigital.services/rdap/domain/skillorchard.ai",
+    "checked_utc": "2026-10-18T00:23:31.562130+00:00"
+  },
+  {
+    "domain": "deftloom.com",
+    "http": 200,
+    "finding": "registration_record_found",
+    "source": "https://rdap.verisign.com/com/v1/domain/deftloom.com",
+    "checked_utc": "2026-10-18T00:23:58.120468+00:00"
+  },
+  {
+    "domain": "deftloom.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/deftloom.dev",
+    "checked_utc": "2026-10-18T00:23:58.191065+00:00"
+  },
+  {
+    "domain": "deftloom.ai",
+    "http": 403,
+    "finding": "unresolved",
+    "source": "https://rdap.identitydigital.services/rdap/domain/deftloom.ai",
+    "checked_utc": "2026-10-18T00:23:58.079403+00:00"
+  },
+  {
+    "domain": "skillwick.com",
+    "http": 200,
+    "finding": "registration_record_found",
+    "source": "https://rdap.verisign.com/com/v1/domain/skillwick.com",
+    "checked_utc": "2026-10-18T00:23:58.100130+00:00"
+  },
+  {
+    "domain": "skillwick.dev",
+    "http": 404,
+    "finding": "no_registration_record",
+    "source": "https://pubapi.registry.google/rdap/domain/skillwick.dev",
+    "checked_utc": "2026-10-18T00:23:58.286806+00:00"
+  },
+  {
+    "domain": "skillwick.ai",
+    "http": 403,
+    "finding": "unresolved",
+    "source": "https://rdap.identitydigital.services/rdap/domain/skillwick.ai",
+    "checked_utc": "2026-10-18T00:23:58.251885+00:00"
+  }
+]

@@ -75,7 +75,15 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Why:** shows the course material applied, which supports the A
 - **Outcome:** —
 
+### D-09 · 2026-10-17 · Project name
+- **Options:** 30-name exploration; finalists were Takeworthy, MotorKin, Deftloom, Skillwick, and Mimewire. Full report: `reports/brand-naming-2026-10-17.md`; domain evidence: `reports/naming-domain-evidence-2026-10-17.json`
+- **Choice:** **Takeworthy**, pronounced TAKE-wur-thee, with the descriptor "Webcam demonstrations. LeRobot datasets."
+- **Scope:** this is the **project name only**. The company/startup name is still open, and so are domain purchase and trademark clearance.
+- **Why:** "a take worth training on" connects recording a demonstration with producing useful data, and it leaves room for datasets and future quality scoring. It was the only finalist with no registry record on .com, .dev, or .ai (as of 2026-10-17; not checkout-verified).
+- **Watch-out:** "take" can sound like video production, so always pair the name with the robotics descriptor.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)
-D-01 demo-day priority · D-03 label source · D-04 depth cue · D-05 smoother architecture · D-06 ACT vs SmolVLA · D-07 where the motors connect · D-09 name · D-10 confirm the label-shift plan, the smoother target, and the gate targets. Details are in `docs/specs/2026-10-16-camera-taught-arm-design.md` §7.
+D-01 demo-day priority · D-03 label source · D-04 depth cue · D-05 smoother architecture · D-06 ACT vs SmolVLA · D-07 where the motors connect · company/startup name · D-10 confirm the label-shift plan, the smoother target, and the gate targets. Details are in `docs/specs/2026-10-16-camera-taught-arm-design.md` §7.

@@ -4,7 +4,11 @@ Running talking points for two decks. Add as you go; trim at the end.
 
 ---
 
+**Project name: Takeworthy** — "Human skill. Captured." · descriptor: *Webcam demonstrations. LeRobot datasets.* (It's the project name only; the company name is still open.)
+
 ## Course deck (audience: professor + class · goal: an A)
+
+**Title slide:** Takeworthy: teaching a robot arm with a webcam and neural networks.
 
 **Format (instructor, Oct 11 post):** 7 minutes, screen share, "a few slides, run the code to show results." Target ~5 slides (~3 min) plus a live demo dashboard (~3–4 min). Oct 24 final; optional early slot Oct 21, 7:30–9:30 PM.
 

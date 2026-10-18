@@ -1,6 +1,6 @@
-# Camera-Taught Robot Arm — Design
+# Takeworthy — Camera-Taught Robot Arm Design
 
-*Working name; naming is Tray's call. Written 2026-10-16. Owner and decision-maker: Tray Branch. Implementation: Claude Code.*
+*Project name: **Takeworthy** (Tray decided 2026-10-17; it is the project name only, and the company name is still open). Written 2026-10-16. Owner and decision-maker: Tray Branch. Implementation: Claude Code.*
 
 ## 1. Intent
 
@@ -224,7 +224,7 @@ Every number reported in either deck comes from these logged measurements.
 | D-06 | Autonomy policy | SmolVLA fine-tune (language) / ACT (proven, no language) | [Start ACT as the safe path; try SmolVLA if time allows. Language is the stronger pitch] |
 | D-07 | Where the motors connect | Windows PC directly / Pi 5 / WSL | [Windows first; Pi 5 if the drivers fight] |
 | D-10 | Confirm the label-shift plan (§4.1), the smoother target (§4.1), and the gate targets (§5) | Accept / edit | [Accept as written] |
-| D-09 | Project and brand name | — | [Tray] |
+| D-09 | Project name → **Takeworthy** (decided 2026-10-17). Company/startup name: still open | — | [Tray] |
 
 ## 8. Notes system (for both decks)
 
