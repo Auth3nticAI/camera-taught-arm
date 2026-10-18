@@ -23,7 +23,8 @@ class Dashboard:
                   arm_uv: np.ndarray | None = None, reach_n: np.ndarray | None = None) -> None:
         """Scalars/status every call; images only when rgb / twin_rgb are given (decimation).
 
-        arm_uv: (k, 2) normalized image coords of shoulder, elbow, wrist in both body modes.
+        arm_uv: (k, 2) normalized image coords: arm mode shoulder, elbow, wrist; reach mode the locked
+            shoulder -> the hand point (the "where" line).
         reach_n: (3,) normalized reach (fwd, left, up) of --control reach, logged as reach/n_x..n_z."""
         if rgb is not None:
             h, w = rgb.shape[:2]

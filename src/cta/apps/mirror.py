@@ -7,6 +7,7 @@ wrist and gripper. --control hand: the hand alone drives the gripper position th
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import sys
 import time
@@ -18,6 +19,7 @@ import numpy as np
 from cta.arm_angles import side_indices
 from cta.camera import Camera, CameraMode, camera_check
 from cta.dashboard import Dashboard
+from cta.depth import DEPTH_MODEL_ID, DepthEstimator
 from cta.filters import OneEuro
 from cta.hands import HandTracker
 from cta.kinematics import Kinematics
@@ -46,6 +48,7 @@ MAX_CONSEC_BUS_FAILS = 15
 WARN_EVERY_S = 1.0
 
 
+DEFAULT_DEPTH_EVERY = 1  # depth model every frame: ~9-10 ms on the RTX 4070 Ti at 518 px (measured 2026-10-18)
 INFER_WIDTH = 1280  # the frame is downscaled once to this width and shared by the hand and pose trackers
 
 
@@ -147,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"--control reach/arm: min visibility/presence of the tracked arm + shoulders (default {POSE_MIN_VIS})")
     ap.add_argument("--reach-mapping", choices=["relative", "absolute"], default="relative",
                     help="reach: relative to calibrated home (default); absolute uses shoulder-to-wrist coordinates")
+    ap.add_argument("--depth", choices=["model", "none"], default="model",
+                    help="reach: forward from Depth Anything V2 (default; GPU fp16 when available) or 'none' = "
+                         "the hand-scale cue. If the model can't load, reach falls back to the hand-scale cue")
+    ap.add_argument("--depth-every", type=int, choices=[1, 2], default=DEFAULT_DEPTH_EVERY,
+                    help=f"reach: run the depth model every Nth frame, holding the last value between "
+                         f"(default {DEFAULT_DEPTH_EVERY})")
     ap.add_argument("--arm-mapping", choices=["flipped", "direct"], default="flipped",
                     help="arm mode: flipped = your hanging arm drives the robot's standing arm (default); "
                          "direct = literal copy of your arm's direction")
@@ -207,7 +216,8 @@ def main(argv: list[str] | None = None) -> int:
 
     wanted = CameraMode(1920, 1080, 60)
     cam = Camera(args.camera, wanted)
-    tracker = pose_tracker = twin = None
+    tracker = pose_tracker = twin = depth_est = None
+    depth_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depth")
     follower = leader = None
     keys = None
     rec: SessionRecorder | None = None
@@ -242,9 +252,21 @@ def main(argv: list[str] | None = None) -> int:
                                     k_fwd=gains.k_fwd * args.gain)
         smoother = OneEuro(beta=args.smooth_beta)
         if args.control == "reach":
+            fwd_source = "scale"
+            if args.depth == "model":
+                print(f"loading depth model {DEPTH_MODEL_ID} ...")
+                depth_est = DepthEstimator()
+                if depth_est.load():
+                    fwd_source = "depth"
+                    print(f"depth model on {depth_est.device}; running every {args.depth_every} frame(s)")
+                else:
+                    print(f"!! WARNING: depth model unavailable ({depth_est.error}); "
+                          "reach forward falls back to the hand-scale cue")
+                    depth_est = None
+            print(f"reach forward from: {'depth model' if fwd_source == 'depth' else 'hand scale (fallback)'}")
             pipe = ReachPipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
                                  pose_min_vis=args.pose_min_vis, table_margin=args.table_margin,
-                                 home_relative=args.reach_mapping == "relative")
+                                 home_relative=args.reach_mapping == "relative", fwd_source=fwd_source)
             contact = pipe.contact  # one MuJoCo contact model, shared with the send-path clearance check
         elif args.control == "arm":
             pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
@@ -309,6 +331,8 @@ def main(argv: list[str] | None = None) -> int:
                 "git_commit": git_commit(), "hand": args.hand, "mirrored": args.mirrored, "control": args.control,
                 "reach_mapping": args.reach_mapping if args.control == "reach" else None,
                 "reach_home_n": pipe.reach_home_n.tolist() if args.control == "reach" and pipe.reach_home_n is not None else None,
+                "reach_forward": getattr(pipe, "fwd_source", None),
+                "depth_model": DEPTH_MODEL_ID if getattr(pipe, "fwd_source", None) == "depth" else None,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
             r = SessionRecorder(sessions_root, name, meta)
@@ -334,6 +358,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
         fps_ema = 0.0
+        depth_ms_ema = 0.0
+        n_frames = 0
+        t_first = None
         lat_ema = 0.0
         loop_ema = 0.0
         last_t = None
@@ -357,15 +384,27 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             last_ok = time.perf_counter()
             small = _infer_frame(rgb)  # resized once, shared by both trackers
+            if t_first is None:
+                t_first = time.perf_counter()
+            # depth (GPU) for THIS frame runs on a worker thread while the MediaPipe trackers (CPU) run here
+            depth_job = None
+            if depth_est is not None and n_frames % args.depth_every == 0:
+                depth_job = depth_pool.submit(depth_est.predict, small)
             obs = tracker.detect(small, t_frame)
             pose_obs = pose_tracker.detect(small, t_frame) if pose_tracker is not None else None
+            depth_map = None
+            if depth_job is not None:
+                depth_map = depth_job.result()
+                depth_ms_ema = (depth_est.last_ms if depth_ms_ema == 0.0
+                                else 0.9 * depth_ms_ema + 0.1 * depth_est.last_ms)
+            n_frames += 1
             if "c" in events:
                 events.discard("c")
                 if obs is None:
                     print("cannot calibrate: no hand visible")
                 else:
                     try:
-                        pipe.calibrate(obs)
+                        pipe.calibrate(obs, pose_obs) if args.control == "reach" else pipe.calibrate(obs)
                         save_calibration(pipe.cal, calib_path)
                         print(f"calibrated (open hand = {pipe.cal.pinch_open:.2f}); saved to {calib_path}. "
                               "Now pinch thumb+index and press 'p'.")
@@ -397,7 +436,12 @@ def main(argv: list[str] | None = None) -> int:
                     rec = start_take()
                 else:
                     stop_take()
-            q, status = pipe.step(obs, t_frame) if args.control == "hand" else pipe.step(obs, t_frame, pose_obs)
+            if args.control == "hand":
+                q, status = pipe.step(obs, t_frame)
+            elif args.control == "reach":
+                q, status = pipe.step(obs, t_frame, pose_obs, depth_map)
+            else:
+                q, status = pipe.step(obs, t_frame, pose_obs)
             tracking_hold = getattr(pipe, "tracking_hold_reason", None)
             if tracking_hold != last_tracking_hold:
                 if tracking_hold is not None:
@@ -469,7 +513,10 @@ def main(argv: list[str] | None = None) -> int:
                         pose_img=None if pose_obs is None else pose_obs.img,
                         pose_world=None if pose_obs is None else pose_obs.world,
                         pose_vis=None if pose_obs is None else pose_obs.vis,
-                        pose_presence=None if pose_obs is None else pose_obs.presence)
+                        pose_presence=None if pose_obs is None else pose_obs.presence,
+                        depth_hand=getattr(pipe, "depth_hand", None),
+                        depth_shoulder=getattr(pipe, "depth_shoulder", None),
+                        locked_side=getattr(pipe, "locked_side", None))
             if bus_err is None:
                 consec_fail = 0
             else:
@@ -493,16 +540,20 @@ def main(argv: list[str] | None = None) -> int:
             heavy = n % 2 == 0  # twin render + images at most every 2nd frame
             twin_rgb = twin.render(q) if heavy else None
             arm_uv = None
-            if heavy and pose_obs is not None and getattr(pipe, "side", None) is not None:
+            if heavy and args.control == "reach":
+                arm_uv = pipe.reach_line_uv  # locked shoulder -> hand point (the "where")
+            elif heavy and pose_obs is not None and getattr(pipe, "side", None) is not None:
                 idx = list(side_indices(pipe.side, args.mirrored))  # shoulder, elbow, wrist
-                arm_uv = pose_obs.img[idx, :2]  # show shoulder -> elbow -> wrist in both body modes
+                arm_uv = pose_obs.img[idx, :2]  # arm mode: shoulder -> elbow -> wrist
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
                            fps_ema, lat_ema, f"{status} REC" if rec is not None else status, loop_ema, extra_rad=extra,
                            arm_uv=arm_uv, reach_n=getattr(pipe, "last_n", None))
             loop_ms = (time.perf_counter() - t_frame) * 1000  # frame read -> end of iteration
             loop_ema = loop_ms if loop_ema == 0.0 else 0.9 * loop_ema + 0.1 * loop_ms
             if args.max_frames and n >= args.max_frames:
-                print(f"done {n} frames: fps(EMA) {fps_ema:.1f}, latency(EMA) {lat_ema:.1f} ms, loop(EMA) {loop_ema:.1f} ms, status {status}")
+                avg_fps = n / (time.perf_counter() - t_first)  # whole run (first frame -> now)
+                print(f"done {n} frames: fps(avg) {avg_fps:.1f}, fps(EMA) {fps_ema:.1f}, latency(EMA) {lat_ema:.1f} ms, loop(EMA) {loop_ema:.1f} ms, "
+                      + (f"depth(EMA) {depth_ms_ema:.1f} ms, " if depth_est is not None else "") + f"status {status}")
                 break
     except KeyboardInterrupt:
         pass
@@ -520,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"WARNING: arm disconnect failed: {e}")
         if keys is not None:
             keys.stop()
+        depth_pool.shutdown(wait=True)
         cam.close()
         if tracker is not None:
             tracker.close()

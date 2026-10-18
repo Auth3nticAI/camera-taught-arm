@@ -63,6 +63,24 @@ class FakePose:
         pass
 
 
+class FakeDepth:
+    """Stands in for Depth Anything V2: a flat 2 m scene (so forward = home); load() result is settable."""
+    ok = True
+    constructed = 0
+
+    def __init__(self, *a, **k):
+        FakeDepth.constructed += 1
+        self.error = None if FakeDepth.ok else "OSError: no network"
+        self.device = "cpu"
+        self.last_ms = 1.0
+
+    def load(self):
+        return FakeDepth.ok
+
+    def predict(self, rgb):
+        return np.full((36, 64), 2.0, np.float32) if FakeDepth.ok else None
+
+
 class FakeTwin:
     def render(self, q):
         return np.zeros((4, 4, 3), np.uint8)
@@ -141,7 +159,7 @@ def _run(monkeypatch, tmp_path, pose, leader, extra, map_file=True, fail=None, l
          calib=None):
     for name, obj in [("Camera", FakeCam), ("HandTracker", FakeTracker), ("Twin", FakeTwin),
                       ("Dashboard", FakeDash), ("FollowerArm", FakeFollower), ("LeaderArm", FakeLeader),
-                      ("PoseTracker", FakePose)]:
+                      ("PoseTracker", FakePose), ("DepthEstimator", FakeDepth)]:
         monkeypatch.setattr(mirror, name, obj)
     monkeypatch.setattr(mirror, "_start_keys", lambda ev: None)
     monkeypatch.setenv("CTA_DATA_DIR", str(tmp_path))
@@ -152,6 +170,7 @@ def _run(monkeypatch, tmp_path, pose, leader, extra, map_file=True, fail=None, l
     FakeDash.arm_points.clear()
     FakeDash.reach.clear()
     FakePose.constructed = 0
+    FakeDepth.constructed = 0
     FakeFollower.sent.clear()
     FakeFollower.calls = FakeFollower.reads = FakeLeader.calls = 0
     FakeFollower.fail = staticmethod(fail or (lambda n: n >= 4))
@@ -420,9 +439,41 @@ def test_control_reach_moves_the_gripper_where_the_arm_reaches(monkeypatch, tmp_
     assert np.all(np.abs(np.diff(sent, axis=0)) <= STEP)  # app speed limit intact
     p, _ = Kinematics().fk(sent[-1])
     assert p[1] > 0.05  # the user reaches toward their left (az 30): the gripper goes to the robot's left
-    assert FakeDash.arm_points and np.asarray(FakeDash.arm_points[-1]).shape == (3, 2)  # shoulder -> elbow -> wrist
+    assert FakeDash.arm_points and np.asarray(FakeDash.arm_points[-1]).shape == (2, 2)  # shoulder -> hand
     assert FakeDash.reach and np.asarray(FakeDash.reach[-1]).shape == (3,)
+    assert FakeDepth.constructed == 1
     d = load_session(tmp_path / "sessions" / "reach_01")
     assert (d["status"] == 2).all()
+    assert (d["locked_side"] == 0).all()  # the left arm, locked once
+    assert np.allclose(d["depth_hand"], 2.0) and np.allclose(d["depth_shoulder"], 2.0)
     meta = json.loads((tmp_path / "sessions" / "reach_01" / "meta.json").read_text())
-    assert meta["control"] == "reach"
+    assert meta["control"] == "reach" and meta["reach_forward"] == "depth"
+
+
+def test_reach_falls_back_to_hand_scale_when_depth_model_fails(monkeypatch, tmp_path, capsys):
+    seen = []
+    real = mirror.ReachPipeline
+
+    def spy(*a, **k):
+        seen.append(k.get("fwd_source"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(mirror, "ReachPipeline", spy)
+    monkeypatch.setattr(FakeDepth, "ok", False)
+    rc = _arm_run(monkeypatch, tmp_path, [], frames=30, control="reach")
+    assert rc == 0 and seen == ["scale"]
+    assert "depth model unavailable" in capsys.readouterr().out
+    assert np.all(np.isfinite(np.array(FakeFollower.sent)))
+
+
+def test_depth_none_never_builds_the_model(monkeypatch, tmp_path):
+    seen = []
+    real = mirror.ReachPipeline
+
+    def spy(*a, **k):
+        seen.append(k.get("fwd_source"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(mirror, "ReachPipeline", spy)
+    assert _arm_run(monkeypatch, tmp_path, ["--depth", "none"], frames=10, control="reach") == 0
+    assert FakeDepth.constructed == 0 and seen == ["scale"]

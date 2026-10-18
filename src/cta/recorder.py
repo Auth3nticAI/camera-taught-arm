@@ -11,7 +11,10 @@ Per-row codes:
   smoother_on (int8): 1 smoother on, 0 off, -1 unknown.
   pose_img, pose_world (33,3), pose_vis, pose_presence (33,): MediaPipe Pose landmarks and their
     per-landmark visibility/presence (--control arm), float32, NaN when absent. Sessions
-    recorded before arm mode have no such keys. meta.json "control" = "arm" | "hand".
+    recorded before arm mode have no such keys. meta.json "control" = "reach" | "arm" | "hand".
+  depth_hand, depth_shoulder (float32, metres): --control reach, the palm-centre depth this frame and the
+    shoulder depth used (Depth Anything V2), NaN when absent / no depth model. locked_side (int8): the arm
+    locked at calibration, 0 = left, 1 = right, -1 = none. Sessions before 2026-10-18 lack these keys.
 """
 from __future__ import annotations
 
@@ -30,6 +33,7 @@ from cta.hands import HandObservation
 VIDEO_FPS = 60
 STATUS_CODES = {"UNCALIBRATED": 0, "NO HAND": 1, "TRACKING": 2, "COAST": 3}
 STATUS_UNKNOWN = 255
+SIDE_CODES = {"left": 0, "right": 1}  # locked_side column; -1 = none
 _REPLACE_TRIES = 5
 _REPLACE_SLEEP_S = 0.1
 
@@ -58,10 +62,12 @@ def _vec(q: np.ndarray | None) -> np.ndarray:
 class SessionRecorder:
     _SHAPES = {"t": (), "hand_present": (), "lm_img": (21, 3), "lm_world": (21, 3), "feats": (6,),
                "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,), "status": (), "smoother_on": (),
-               "pose_img": (33, 3), "pose_world": (33, 3), "pose_vis": (33,), "pose_presence": (33,)}
+               "pose_img": (33, 3), "pose_world": (33, 3), "pose_vis": (33,), "pose_presence": (33,),
+               "depth_hand": (), "depth_shoulder": (), "locked_side": ()}
     _DTYPES = {"hand_present": bool, "status": np.uint8, "smoother_on": np.int8,
                "pose_img": np.float32, "pose_world": np.float32, "pose_vis": np.float32,
-               "pose_presence": np.float32}
+               "pose_presence": np.float32, "depth_hand": np.float32, "depth_shoulder": np.float32,
+               "locked_side": np.int8}
 
     def __init__(self, root: Path, name: str, meta: dict, autosave_s: float = 30.0,
                  video_size: tuple[int, int] = (1280, 720)):
@@ -87,7 +93,9 @@ class SessionRecorder:
             q_baseline: np.ndarray, q_leader: np.ndarray | None, q_follower: np.ndarray | None,
             rgb: np.ndarray, status: int = STATUS_UNKNOWN, smoother_on: int = -1,
             pose_img: np.ndarray | None = None, pose_world: np.ndarray | None = None,
-            pose_vis: np.ndarray | None = None, pose_presence: np.ndarray | None = None) -> None:
+            pose_vis: np.ndarray | None = None, pose_presence: np.ndarray | None = None,
+            depth_hand: float | None = None, depth_shoulder: float | None = None,
+            locked_side: str | None = None) -> None:
         if self._closed:
             raise RuntimeError("recorder is closed")
         if self.n == self._cap:
@@ -110,6 +118,9 @@ class SessionRecorder:
         b["pose_world"][i] = np.nan if pose_world is None else pose_world
         b["pose_vis"][i] = np.nan if pose_vis is None else pose_vis
         b["pose_presence"][i] = np.nan if pose_presence is None else pose_presence
+        b["depth_hand"][i] = np.nan if depth_hand is None else depth_hand
+        b["depth_shoulder"][i] = np.nan if depth_shoulder is None else depth_shoulder
+        b["locked_side"][i] = SIDE_CODES.get(locked_side, -1)
         w, h = self.video_size
         frame = rgb if (rgb.shape[1], rgb.shape[0]) == (w, h) else cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
         self._video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))  # a row always gets a frame
