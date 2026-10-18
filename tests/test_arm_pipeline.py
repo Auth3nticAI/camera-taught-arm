@@ -7,7 +7,7 @@ from cta.config import READY_Q, SIM_LIMITS
 from cta.hands import HandObservation
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains
-from cta.pipeline import COAST_S, TABLE_CLEARANCE_M, ArmPosePipeline, clear_table
+from cta.pipeline import CLEARANCE_BODIES, COAST_S, TABLE_CLEARANCE_M, ArmPosePipeline, clear_table
 from cta.pose import PoseObservation
 
 D = np.radians
@@ -25,7 +25,7 @@ def gains(kin):
 
 @pytest.fixture(scope="module")
 def contact():
-    return ContactModel()
+    return ContactModel(CLEARANCE_BODIES)
 
 
 def hand(po=None, **kw):
@@ -88,7 +88,7 @@ def test_hand_missing_holds_wrist_and_gripper(kin, gains):
     p = calibrated(kin, gains)
     po = pose(az=0, elev=90, flex=60)
     q0, _ = run(p, hand(po, pinch_closed=True), po)
-    q1, s1 = run(p, None, pose(az=-40, elev=70, flex=90), t0=2.0)
+    q1, s1 = run(p, None, pose(az=-40, elev=70, flex=90), n=40, t0=1.0)  # hand seen < 1 s ago
     assert s1 == "TRACKING"
     assert not np.allclose(q0[:3], q1[:3], atol=0.1)  # shoulder/elbow still follow the body
     assert np.array_equal(q0[3:], q1[3:])             # wrist_flex, wrist_roll, gripper held
@@ -160,8 +160,9 @@ def test_clear_table_leaves_safe_pose(contact):
 def test_mirrored_pipeline_matches_unmirrored(kin, gains):
     pa = calibrated(kin, gains)
     pb = calibrated(kin, gains, mirrored=True)
-    qa, _ = run(pa, None, pose(az=20, elev=75, flex=50, side="left"))
-    qb, _ = run(pb, None, pose(az=20, elev=75, flex=50, side="left", mirrored=True))
+    poa, pob = pose(az=20, elev=75, flex=50), pose(az=20, elev=75, flex=50, mirrored=True)
+    qa, _ = run(pa, hand(poa), poa)
+    qb, _ = run(pb, hand(pob), pob)
     assert np.allclose(qa, qb)
 
 
@@ -172,3 +173,126 @@ def test_reset_to_and_surface(kin, gains):
     for name in ("step", "calibrate", "set_pinch_closed", "reset_to", "set_smoother", "q_cmd", "cal",
                  "smoother", "last_features"):
         assert hasattr(p, name)
+
+
+# ---- review fixes ------------------------------------------------------------------------------------
+
+def low_vis(po, idx, v=0.1):
+    po.vis = np.ones(33)
+    po.vis[list(idx)] = v
+    return po
+
+
+def test_low_visibility_arm_is_no_pose(kin, gains):
+    p = calibrated(kin, gains)
+    po = pose()
+    q0, s0 = p.step(hand(po), 0.0, po)
+    assert s0 == "TRACKING"
+    bad = low_vis(pose(az=-60), [13])  # elbow guessed (out of frame)
+    q1, s1 = p.step(hand(po), COAST_S / 2, bad)
+    assert s1 == "COAST" and np.array_equal(q0, q1)
+    q2, s2 = p.step(hand(po), COAST_S * 3, bad)
+    assert s2 == "NO HAND" and np.array_equal(q0, q2)
+    bad2 = pose(az=-60)
+    bad2.presence = np.ones(33)
+    bad2.presence[12] = 0.2  # the other shoulder is also needed (body frame)
+    assert p.step(hand(po), COAST_S * 4, bad2)[1] == "NO HAND"
+
+
+def test_pose_min_vis_threshold_is_configurable(kin, gains):
+    p = calibrated(kin, gains, pose_min_vis=0.05)
+    po = low_vis(pose(), [13])
+    assert p.step(hand(po), 0.0, po)[1] == "TRACKING"
+
+
+def test_hidden_hips_still_track(kin, gains):
+    from cta.arm_angles import ELBOW_OFFSET_RAD, LIFT_OFFSET_RAD
+    p = calibrated(kin, gains)
+    po = low_vis(pose(az=30, elev=60, flex=40), [23, 24])
+    po.world[[23, 24]] = [[0.3, -0.2, 0.4], [0.1, 0.5, -0.3]]  # guessed hips
+    q, s = run(p, hand(po), po)
+    assert s == "TRACKING"
+    assert q[0] == pytest.approx(D(-30), abs=1e-3)
+    assert q[1] == pytest.approx(D(60) - LIFT_OFFSET_RAD, abs=1e-3)
+    assert q[2] == pytest.approx(D(40) - ELBOW_OFFSET_RAD, abs=1e-3)
+
+
+def test_body_without_hand_disengages_after_a_second(kin, gains):
+    from cta.pipeline import HAND_ENGAGE_S
+    p = calibrated(kin, gains)
+    po = pose(az=0, elev=60, flex=40)
+    q0, _ = run(p, hand(po), po, n=10)
+    q1, s1 = p.step(None, 9 / 60 + HAND_ENGAGE_S / 2, pose(az=-40, elev=60, flex=40))
+    assert s1 == "TRACKING" and not np.allclose(q0, q1)  # recently engaged: the body still drives
+    q2, s2 = p.step(None, 9 / 60 + HAND_ENGAGE_S + 0.1, pose(az=40, elev=60, flex=40))
+    assert s2 == "NO HAND" and np.array_equal(q1, q2)  # hand gone > 1 s: hold
+    fresh = calibrated(kin, gains)
+    assert fresh.step(None, 0.0, po)[1] == "NO HAND"  # body alone never engages
+
+
+class _FloorEverywhere:
+    table_z = 0.0
+
+    def lowest_z(self, q):
+        return -1.0  # every pose (even 'straight up') is in the table
+
+
+def test_clear_table_reports_failure_instead_of_unsafe_pose():
+    assert clear_table(np.array([0.0, 1.0, 1.0, 0.5, 0.0, 0.5]), _FloorEverywhere()) is None
+
+
+def test_pipeline_holds_when_clearance_impossible(kin, gains, capsys):
+    p = calibrated(kin, gains)
+    po = pose(az=0, elev=60, flex=40)
+    q0, _ = run(p, hand(po), po, n=5)
+    p.contact = _FloorEverywhere()
+    for i in range(3):
+        q, s = p.step(hand(po), 1.0 + i / 60, pose(az=-50, elev=80, flex=60))
+        assert np.array_equal(q, q0)
+    assert p.clearance_failures == 3
+    assert capsys.readouterr().out.count("clearance") == 1  # logged once
+
+
+def test_clearance_checks_wrist_and_forearm(contact):
+    assert set(CLEARANCE_BODIES) >= {"gripper", "moving_jaw_so101_v1", "wrist", "lower_arm"}
+    q = D(np.array([0.0, 75.0, 48.0, 94.0, 0.0, 5.0]))  # jaws 2.1 cm up, but the wrist housing in the table
+    assert ContactModel().lowest_z(q) >= contact.table_z + TABLE_CLEARANCE_M
+    assert contact.lowest_z(q) < contact.table_z + TABLE_CLEARANCE_M
+    assert contact.lowest_z(clear_table(q, contact)) >= contact.table_z + TABLE_CLEARANCE_M - 1e-3
+
+
+def test_wrist_solve_stays_on_its_side_at_the_wrap(kin, gains):
+    p = calibrated(kin, gains)
+    lo, hi = SIM_LIMITS[3]
+    q = np.array([0.0, D(30), D(-60), 0.0, 0.0, 0.5])
+    base = kin.planar_pitch(q)
+    q1 = q.copy()
+    q1[3] = 0.5
+    slope = np.sign(kin.planar_pitch(q1) - base)
+    for w in (D(178), D(182), D(-178)):  # unreachable targets just either side of the +-180 wrap
+        target = base + slope * w
+        p.q_cmd[3] = hi
+        assert p._wrist_flex_for_pitch(q, target) == pytest.approx(hi)
+        p.q_cmd[3] = lo
+        assert p._wrist_flex_for_pitch(q, target) == pytest.approx(lo)
+
+
+def test_world_pitch_held_even_when_clearance_moves_the_arm(kin, gains):
+    from cta.arm_angles import LIFT_OFFSET_RAD
+    p = calibrated(kin, gains)
+    po = pose(az=0, elev=80, flex=70)  # the forearm reaches down: clearance raises the arm
+    q, s = run(p, hand(po), po)
+    assert s == "TRACKING"
+    assert q[1] < D(80) - LIFT_OFFSET_RAD - 0.05  # clearance did move the lift
+    assert kin.fk(q)[1] == pytest.approx(p.cal.pitch_home, abs=D(1))
+
+
+def test_fast_clearance_model_matches_exact(contact):
+    from cta.pipeline import clearance_model
+    fast = clearance_model()
+    assert fast.table_z == contact.table_z
+    rng = np.random.default_rng(7)
+    for _ in range(300):
+        q = rng.uniform(SIM_LIMITS[:, 0], SIM_LIMITS[:, 1])
+        err = fast.lowest_z(q) - contact.lowest_z(q)
+        assert 0.0 <= err < 2e-4  # never lower than exact; < 0.2 mm high

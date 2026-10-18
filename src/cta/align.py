@@ -29,21 +29,44 @@ MAX_TRUSTED_STD_DEG = 2.0
 _CONTACT_BODIES = ("gripper", "moving_jaw_so101_v1")
 
 
-class ContactModel:
-    """Lowest point of the gripper + moving-jaw meshes, in the base frame, for a sim pose."""
+_EXTREMES_CACHE: dict[tuple[int, int], np.ndarray] = {}
 
-    def __init__(self) -> None:
+
+def _extremes(verts: np.ndarray, n_dirs: int) -> np.ndarray:
+    """Vertices that are lowest along at least one of n_dirs Fibonacci-sphere directions (a hull subset)."""
+    i = np.arange(n_dirs) + 0.5
+    phi = np.arccos(1 - 2 * i / n_dirs)
+    th = np.pi * (1 + 5 ** 0.5) * i
+    dirs = np.stack([np.cos(th) * np.sin(phi), np.sin(th) * np.sin(phi), np.cos(phi)], axis=1)
+    return verts[np.unique(np.argmin(verts @ dirs.T, axis=0))]
+
+
+class ContactModel:
+    """Lowest point of the gripper + moving-jaw meshes (or the given bodies' meshes), in the base frame."""
+
+    def __init__(self, bodies: tuple[str, ...] = _CONTACT_BODIES, extreme_dirs: int = 0) -> None:
+        """extreme_dirs > 0: keep only each mesh's extreme vertices along that many directions (fast
+        approximate lowest_z for per-frame use; exact when 0, the default used by the alignment solve)."""
         self.m = mm.load("robotstudio_so101")
         self.d = mujoco.MjData(self.m)
         self._qadr = [self.m.jnt_qposadr[mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_JOINT, j)] for j in JOINTS]
         self._base = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE, "baseframe")
-        bodies = {mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, b) for b in _CONTACT_BODIES}
+        self.bodies = tuple(bodies)
+        bodies = {mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, b) for b in bodies}
+        if -1 in bodies:
+            raise ValueError(f"unknown body in {self.bodies}")
         self._geoms = []
         for g in range(self.m.ngeom):
             if self.m.geom_bodyid[g] in bodies and self.m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
                 mid = self.m.geom_dataid[g]
                 a, n = self.m.mesh_vertadr[mid], self.m.mesh_vertnum[mid]
-                self._geoms.append((g, self.m.mesh_vert[a:a + n].copy()))
+                verts = self.m.mesh_vert[a:a + n].copy()
+                if extreme_dirs:
+                    key = (int(mid), extreme_dirs)
+                    if key not in _EXTREMES_CACHE:
+                        _EXTREMES_CACHE[key] = _extremes(verts, extreme_dirs)
+                    verts = _EXTREMES_CACHE[key]
+                self._geoms.append((g, verts))
         base = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_BODY, "base")
         self._base_geoms = []
         for g in range(self.m.ngeom):
