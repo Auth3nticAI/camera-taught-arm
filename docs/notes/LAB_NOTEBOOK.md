@@ -1,4 +1,4 @@
-# Lab Notebook
+# Takeworthy — Lab Notebook
 
 Dated entries: what was tried, what broke, what was learned, numbers, and screenshot paths.
 
@@ -13,7 +13,7 @@ Dated entries: what was tried, what broke, what was learned, numbers, and screen
   - GR00T N1.5 fine-tuning needs ~33 GB of VRAM, so it's out. SmolVLA (`lerobot/smolvla_base`) and ACT both fit.
 - Ordered the SO-ARM101 Pro (leader + follower) and the innomaker camera. Arriving 10/17.
 - Human-facing camera = an AI PTZ 4K webcam. **Lesson:** "smart" camera features (auto-tracking, gesture control, auto-zoom, auto-focus) break a vision system that assumes a fixed camera. Turn them off and lock it to 1080p@60.
-- Wrote the design doc: `docs/specs/2026-10-16-camera-taught-arm-design.md`.
+- Wrote the design doc: `docs/specs/2026-10-16-takeworthy-design.md`.
 
 ## 2026-10-17 · Plan 1 built (teach layer, no arm yet)
 - Built 9 tasks with an implementer and an independent reviewer per task, then a final whole-branch review. Result: **81 automated tests passing**. Branch `plan1/teach-layer` on GitHub.

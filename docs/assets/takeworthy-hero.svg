@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
-<title id="title">Camera Taught Arm — Human motion. Machine movement.</title>
+<title id="title">Takeworthy — Human motion. Machine movement.</title>
 <desc id="desc">Hand landmarks and an articulated robot arm on a dark technical drawing.</desc>
 <defs>
   <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#101a22"/><stop offset="1" stop-color="#0a1017"/></linearGradient>
@@ -9,7 +9,7 @@
 <rect x="740" y="90" width="496" height="345" fill="url(#grid)"/>
 <path d="M48 79H1232" stroke="#34404a"/>
 <circle cx="55" cy="45" r="5" fill="#71e4bf"/>
-<text x="74" y="51" fill="#eef4ef" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" letter-spacing="1">CAMERA TAUGHT ARM</text>
+<text x="74" y="51" fill="#eef4ef" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" letter-spacing="1">TAKEWORTHY</text>
 <text x="1232" y="50" text-anchor="end" fill="#94a5ae" font-family="Consolas,monospace" font-size="12" letter-spacing="2">THE TEACH LAYER / 01</text>
 <text x="48" y="148" fill="#71e4bf" font-family="Consolas,monospace" font-size="13" letter-spacing="2">LEARNING FROM DEMONSTRATION</text>
 <g font-family="Segoe UI,Arial,sans-serif" font-size="69" font-weight="700" letter-spacing="-3">

@@ -1,4 +1,4 @@
-# Teach Layer Core Implementation Plan (Plan 1 of 3)
+# Takeworthy — Teach Layer Core Implementation Plan (Plan 1 of 3)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 (uv), torch 2.6.0+cu124, lerobot[feetech] 0.4.4, mediapipe 1.1.1 (Tasks API), mujoco 3.16.0, mujoco-menagerie 2026.10.3 (`robotstudio_so101`), rerun-sdk 0.26.2, pytest.
 
-**Spec:** `docs/specs/2026-10-16-camera-taught-arm-design.md` (moves into the repo in Task 1)
+**Spec:** `docs/specs/2026-10-16-takeworthy-design.md` (moves into the repo in Task 1)
 
 **Later plans (written when needed):**
 - Plan 2: learned retargeting network + GRU smoother + benchmarks (v1 trains Sunday AM from Task 9's sessions).

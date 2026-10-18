@@ -86,4 +86,4 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 ---
 
 ## Open (waiting for Tray)
-D-01 demo-day priority · D-03 label source · D-04 depth cue · D-05 smoother architecture · D-06 ACT vs SmolVLA · D-07 where the motors connect · company/startup name · D-10 confirm the label-shift plan, the smoother target, and the gate targets. Details are in `docs/specs/2026-10-16-camera-taught-arm-design.md` §7.
+D-01 demo-day priority · D-03 label source · D-04 depth cue · D-05 smoother architecture · D-06 ACT vs SmolVLA · D-07 where the motors connect · company/startup name · D-10 confirm the label-shift plan, the smoother target, and the gate targets. Details are in `docs/specs/2026-10-16-takeworthy-design.md` §7.

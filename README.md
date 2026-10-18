@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/readme-hero.svg" alt="Camera Taught Arm. Human motion. Machine movement." width="100%">
+  <img src="docs/assets/takeworthy-hero.svg" alt="Takeworthy. Human motion. Machine movement." width="100%">
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 
 ## Human skill, captured.
 
-A PyTorch class project exploring how everyday webcam motion can become robot demonstrations. The current **teach layer** uses MediaPipe, geometry, inverse kinematics, and a MuJoCo digital twin. It provides the teacher and baseline for the planned learned models.
+**Takeworthy** is a PyTorch class project exploring how everyday webcam motion can become robot demonstrations. The current **teach layer** uses MediaPipe, geometry, inverse kinematics, and a MuJoCo digital twin. It provides the teacher and baseline for the planned learned models.
 
 <table>
 <tr>
@@ -96,7 +96,7 @@ uv run cta-mirror --camera 0 --hand left
 uv run cta-mirror --help
 ```
 
-Physical-arm mode requires a follower serial port and a verified `sim_real_map.json`. See the [alignment utility](src/cta/apps/sim_real_check.py) and [design document](docs/specs/2026-10-16-camera-taught-arm-design.md) before using hardware.
+Physical-arm mode requires a follower serial port and a verified `sim_real_map.json`. See the [alignment utility](src/cta/apps/sim_real_check.py) and [design document](docs/specs/2026-10-16-takeworthy-design.md) before using hardware.
 
 </details>
 
@@ -142,7 +142,7 @@ The dashboard shows the live tracking and arm state. The recorder captures demon
 | [Engineering decisions](docs/notes/DECISIONS.md) | What was chosen and why |
 | [Lab notebook](docs/notes/LAB_NOTEBOOK.md) | Experiments, bugs, measured results, and lessons |
 | [Deck notes](docs/notes/DECK_NOTES.md) | Talking points for the course and client decks |
-| [Approved design](docs/specs/2026-10-16-camera-taught-arm-design.md) | System design and project direction |
+| [Approved design](docs/specs/2026-10-16-takeworthy-design.md) | System design and project direction |
 | [Plan 1: teach layer](docs/plans/2026-10-16-teach-layer-core.md) | Build plan for the core system |
 | [Webcam motion capture research](reports/Webcam%20motion%20capture%20for%20robotics.md) | Research report with ten project ideas |
 | [Raw research notes](research_notes/) | Supporting sources and findings |
