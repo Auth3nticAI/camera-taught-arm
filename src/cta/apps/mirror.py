@@ -25,7 +25,7 @@ from cta.hands import HandTracker
 from cta.kinematics import Kinematics
 from cta.mapping import MapGains, load_calibration, save_calibration
 from cta.paths import data_dir, models_dir
-from cta.pipeline import (POSE_MIN_VIS, TABLE_CLEARANCE_M, ArmPosePipeline, MirrorPipeline, ReachPipeline,
+from cta.pipeline import (FWD_GAIN, POSE_MIN_VIS, TABLE_CLEARANCE_M, ArmPosePipeline, MirrorPipeline, ReachPipeline,
                           clearance_model,
                           guard_clearance)
 from cta.pose import PoseTracker
@@ -48,6 +48,7 @@ MAX_CONSEC_BUS_FAILS = 15
 WARN_EVERY_S = 1.0
 
 
+DEPTH_TIMEOUT_S = 5.0    # a depth result slower than this counts as a failure (fallback, loop continues)
 DEFAULT_DEPTH_EVERY = 1  # depth model every frame: ~9-10 ms on the RTX 4070 Ti at 518 px (measured 2026-10-18)
 INFER_WIDTH = 1280  # the frame is downscaled once to this width and shared by the hand and pose trackers
 
@@ -153,6 +154,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--depth", choices=["model", "none"], default="model",
                     help="reach: forward from Depth Anything V2 (default; GPU fp16 when available) or 'none' = "
                          "the hand-scale cue. If the model can't load, reach falls back to the hand-scale cue")
+    ap.add_argument("--fwd-gain", type=float, default=FWD_GAIN,
+                    help=f"reach (relative): forward gain on the measured forward reach (default {FWD_GAIN}, "
+                         "chosen from replay so forward spans the workspace box without saturating)")
     ap.add_argument("--depth-every", type=int, choices=[1, 2], default=DEFAULT_DEPTH_EVERY,
                     help=f"reach: run the depth model every Nth frame, holding the last value between "
                          f"(default {DEFAULT_DEPTH_EVERY})")
@@ -266,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"reach forward from: {'depth model' if fwd_source == 'depth' else 'hand scale (fallback)'}")
             pipe = ReachPipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
                                  pose_min_vis=args.pose_min_vis, table_margin=args.table_margin,
-                                 home_relative=args.reach_mapping == "relative", fwd_source=fwd_source)
+                                 home_relative=args.reach_mapping == "relative", fwd_source=fwd_source,
+                                 fwd_gain=args.fwd_gain)
             contact = pipe.contact  # one MuJoCo contact model, shared with the send-path clearance check
         elif args.control == "arm":
             pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
@@ -394,9 +399,15 @@ def main(argv: list[str] | None = None) -> int:
             pose_obs = pose_tracker.detect(small, t_frame) if pose_tracker is not None else None
             depth_map = None
             if depth_job is not None:
-                depth_map = depth_job.result()
-                depth_ms_ema = (depth_est.last_ms if depth_ms_ema == 0.0
-                                else 0.9 * depth_ms_ema + 0.1 * depth_est.last_ms)
+                try:
+                    depth_map = depth_job.result(timeout=DEPTH_TIMEOUT_S)
+                    depth_ms_ema = (depth_est.last_ms if depth_ms_ema == 0.0
+                                    else 0.9 * depth_ms_ema + 0.1 * depth_est.last_ms)
+                except Exception as e:  # never let depth end the loop (the finally would drop the arms)
+                    print(f"!! WARNING: depth model failed ({type(e).__name__}: {e}); "
+                          "reach forward continues on the hand-scale cue")
+                    depth_est, depth_map = None, None  # stop submitting
+                    pipe.depth_failed()
             n_frames += 1
             if "c" in events:
                 events.discard("c")

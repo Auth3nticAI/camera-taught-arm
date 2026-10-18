@@ -67,9 +67,12 @@ class FakeDepth:
     """Stands in for Depth Anything V2: a flat 2 m scene (so forward = home); load() result is settable."""
     ok = True
     constructed = 0
+    raise_after = None  # predict() raises from this call on (a runtime CUDA error mid-run)
+    calls = 0
 
     def __init__(self, *a, **k):
         FakeDepth.constructed += 1
+        FakeDepth.calls = 0
         self.error = None if FakeDepth.ok else "OSError: no network"
         self.device = "cpu"
         self.last_ms = 1.0
@@ -78,6 +81,9 @@ class FakeDepth:
         return FakeDepth.ok
 
     def predict(self, rgb):
+        FakeDepth.calls += 1
+        if FakeDepth.raise_after is not None and FakeDepth.calls >= FakeDepth.raise_after:
+            raise RuntimeError("CUDA error: an illegal memory access was encountered")
         return np.full((36, 64), 2.0, np.float32) if FakeDepth.ok else None
 
 
@@ -477,3 +483,36 @@ def test_depth_none_never_builds_the_model(monkeypatch, tmp_path):
     monkeypatch.setattr(mirror, "ReachPipeline", spy)
     assert _arm_run(monkeypatch, tmp_path, ["--depth", "none"], frames=10, control="reach") == 0
     assert FakeDepth.constructed == 0 and seen == ["scale"]
+
+
+def test_depth_error_mid_run_falls_back_and_keeps_running(monkeypatch, tmp_path, capsys):
+    """A runtime depth exception must not end the loop (the finally would close the arms: torque off)."""
+    pipes = []
+    real = mirror.ReachPipeline
+
+    def spy(*a, **k):
+        pipes.append(real(*a, **k))
+        return pipes[-1]
+
+    monkeypatch.setattr(mirror, "ReachPipeline", spy)
+    monkeypatch.setattr(FakeDepth, "raise_after", 20)
+    rc = _arm_run(monkeypatch, tmp_path, [], frames=60, control="reach")
+    out = capsys.readouterr().out
+    assert rc == 0 and "done 60 frames" in out          # the loop ran to the end
+    assert len(FakeFollower.sent) == 60                  # every frame sent a command; arms closed only at exit
+    assert pipes[0].fwd_source == "scale"                # fallback engaged
+    assert out.count("depth model failed") == 1          # warned once
+    assert FakeDepth.calls == 20                         # stopped submitting after the failure
+
+
+def test_fwd_gain_flag_reaches_the_pipeline(monkeypatch, tmp_path):
+    seen = []
+    real = mirror.ReachPipeline
+
+    def spy(*a, **k):
+        seen.append(k.get("fwd_gain"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(mirror, "ReachPipeline", spy)
+    assert _arm_run(monkeypatch, tmp_path, ["--fwd-gain", "0.4"], frames=5, control="reach") == 0
+    assert seen == [0.4]

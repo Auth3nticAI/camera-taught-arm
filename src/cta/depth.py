@@ -14,7 +14,8 @@ import numpy as np
 
 DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 DEFAULT_INPUT_H = 518      # model input height (multiple of 14; 518 = its training size); width follows the
-                           # frame aspect. Metric scale shifts with input size (replay: ~1.5 m at 266 vs ~1.1 m)
+                           # frame aspect. Metric scale shifts with input size (replay, same takes: shoulder
+                           # ~2.1-2.3 m at 266 px vs ~1.6-1.7 m at 518 px; hand ~1.5 vs ~1.1 m)
 PATCH_RADIUS_FRAC = 0.02   # patch half-size, fraction of the depth map height
 
 
