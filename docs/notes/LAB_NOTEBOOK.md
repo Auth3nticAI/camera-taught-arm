@@ -68,3 +68,25 @@ Dated entries: what was tried, what broke, what was learned, numbers, and screen
   - The shoulder offset (~10°) is the hand-set calibration "middle" pose being off vertical.
   - Saved to `cta-data/sim_real_map.json`.
 - **Deck line:** "Calibrated by touching the table 11 times: least-squares cut the sim-to-real contact error from 47 mm to 3 mm."
+
+## 2026-10-17 (late) · First real-arm mirroring 🦾
+- **No 12 V power at first:** the motors read **4.9 V** (USB only). USB powers reading but not moving. With the 12 V supply connected they read 12.0 V.
+- **Speed limiter, two iterations:**
+  - Ramping from the last *command* drifted away from a stalled arm.
+  - Ramping from the *measured* pose crawled and shook, because each step fell inside the servo deadband.
+  - **Final:** ramp from the last command, bounded to 12° ahead of the measured pose, plus a "not moving, check 12 V" warning. Regression tests cover the stall, the deadband, and the lead bound.
+- **Tracking flicker:** the log alternated TRACKING/NO HAND every frame because MediaPipe's left/right label flickers on a small hand.
+  - Now the app follows the same hand by wrist position, coasts through dropouts under 0.15 s (status COAST), and detects at 1280 px.
+- **Result:** the real arm follows the left hand. The loop runs at ~42 fps with ~20 ms latency. Some lag remains, and the arm doesn't cover the full range of hand motion.
+- **Live-tuning settings added** (defaults are Claude's starting guesses; Tray tunes them):
+  - `--servo-p 24` (LeRobot default 16);
+  - `--gain 1.5`;
+  - `--smooth-beta 0.05` (was 0.007);
+  - lead 12° (LeRobot backstop 15°).
+
+### Tuning plan (next session)
+1. Baseline: `uv run cta-mirror --robot so101 --follower-port COM4 --mirrored --hand left`
+2. **Lag:** try `--servo-p 28`, then `32`. Stop when it starts to shake when your hand is still.
+3. **Range:** try `--gain 1.2 / 1.5 / 2.0`, and pick the one where your comfortable hand range covers the arm's workspace.
+4. **Jitter vs. lag:** try `--smooth-beta 0.02 / 0.05 / 0.1`. Also try the `s` key (smoothing off) to compare.
+5. Log the chosen values in DECISIONS.md. They're deck material: "tuned servo stiffness vs. shake".

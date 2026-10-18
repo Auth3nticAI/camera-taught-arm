@@ -27,7 +27,11 @@ KEY_CHARS = "csrqp"
 STALL_GAP_RAD = np.radians(10.0)  # target this far from the measured pose ...
 STALL_MOVE_RAD = np.radians(0.2)  # ... while the arm moves less than this per frame ...
 STALL_FRAMES = 45                 # ... for this many frames (~0.75 s) -> warn: arm not moving
-MAX_LEAD_RAD = np.radians(8.0)    # command may lead the measured pose by at most this (LeRobot clamps at 10)
+MAX_LEAD_RAD = np.radians(12.0)   # command may lead the measured pose by at most this (LeRobot clamps at 15)
+# live-tuning defaults (2026-10-17, first real-arm run lagged): Tray tunes these with the CLI flags
+DEFAULT_SERVO_P = 24      # LeRobot uses 16 (soft, laggy); 32 = factory (stiff, may shake)
+DEFAULT_GAIN = 1.5        # scales hand motion -> arm motion (1.0 = 30 cm of arm per frame-width of hand)
+DEFAULT_SMOOTH_BETA = 0.05  # One Euro beta: higher = less lag when moving (LeRobot-agnostic; 0.007 was laggy)
 MAX_CONSEC_BUS_FAILS = 15
 WARN_EVERY_S = 1.0
 
@@ -107,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--hand", choices=["right", "left"], default="right")
     ap.add_argument("--mirrored", action="store_true", help="camera image is already mirrored")
+    ap.add_argument("--servo-p", type=int, default=DEFAULT_SERVO_P,
+                    help=f"arm servo stiffness 8-32 (default {DEFAULT_SERVO_P}; LeRobot uses 16)")
+    ap.add_argument("--gain", type=float, default=DEFAULT_GAIN,
+                    help=f"hand->arm motion scale (default {DEFAULT_GAIN})")
+    ap.add_argument("--smooth-beta", type=float, default=DEFAULT_SMOOTH_BETA,
+                    help=f"One Euro beta: higher = snappier, lower = smoother (default {DEFAULT_SMOOTH_BETA})")
     ap.add_argument("--calib", default=None, help="calibration JSON path")
     ap.add_argument("--record", default=None, metavar="NAME",
                     help="enable recording; 'r' key starts/stops a take saved as sessions/NAME_NN")
@@ -167,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.robot == "so101":
             follower = FollowerArm(args.follower_port)
             follower.connect()
-            print(f"follower connected on {args.follower_port} (mode: {args.mode})")
+            follower.set_servo_p(args.servo_p)  # arm is resting: brief torque-off is harmless here
+            print(f"follower connected on {args.follower_port} (mode: {args.mode}, servo P {args.servo_p})")
             if args.mode == "paired":
                 leader = LeaderArm(args.leader_port)
                 leader.connect()
@@ -176,7 +187,9 @@ def main(argv: list[str] | None = None) -> int:
 
         kin = Kinematics()
         gains = MapGains.from_kinematics(kin)
-        smoother = OneEuro()
+        gains = dataclasses.replace(gains, k_lat=gains.k_lat * args.gain, k_vert=gains.k_vert * args.gain,
+                                    k_fwd=gains.k_fwd * args.gain)
+        smoother = OneEuro(beta=args.smooth_beta)
         pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
         prev = None
         last_meas = None
@@ -294,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             if "s" in events:
                 events.discard("s")
                 if pipe.smoother is None:
-                    pipe.set_smoother(OneEuro())
+                    pipe.set_smoother(OneEuro(beta=args.smooth_beta))
                 else:
                     pipe.set_smoother(None)
                 print(f"smoother {'ON' if pipe.smoother else 'OFF'}")

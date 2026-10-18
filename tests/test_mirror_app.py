@@ -88,6 +88,9 @@ class FakeFollower:
             err = np.asarray(q) - STATE["pose"]
             STATE["pose"] = STATE["pose"] + np.where(np.abs(err) > STATE["deadband"], err, 0.0)
 
+    def set_servo_p(self, p):
+        STATE["servo_p"] = p
+
     def close(self):
         closed.append("follower")
 
@@ -262,3 +265,9 @@ def test_servo_deadband_does_not_freeze_the_arm(monkeypatch, tmp_path):
     finally:
         STATE["deadband"] = STATE["clock"] = None
     assert moved > np.radians(5.0)
+
+
+def test_servo_p_default_applied_on_connect(monkeypatch, tmp_path):
+    _run(monkeypatch, tmp_path, REST, None, ["--max-frames", "3"], fail=lambda n: False)
+    from cta.apps.mirror import DEFAULT_SERVO_P
+    assert STATE["servo_p"] == DEFAULT_SERVO_P

@@ -106,13 +106,30 @@ class _LeRobotArm:
             self._dev.disconnect()
 
 
+MAX_RELATIVE_TARGET_DEG = 15.0  # LeRobot's per-command backstop (our own lead limit is tighter)
+SERVO_P_RANGE = (8, 32)         # Feetech P_Coefficient: LeRobot sets 16 (soft); factory default is 32
+
+
 class FollowerArm(_LeRobotArm):
     _what = "SO-101 follower (cta_follower)"
     _cal_cmd = "uv run lerobot-calibrate --robot.type=so101_follower --robot.port={port} --robot.id=cta_follower"
 
     def _make(self):  # pragma: no cover
         from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
-        return SO101Follower(SO101FollowerConfig(port=self.port, id="cta_follower", max_relative_target=10.0))
+        return SO101Follower(SO101FollowerConfig(port=self.port, id="cta_follower",
+                                                 max_relative_target=MAX_RELATIVE_TARGET_DEG))
+
+    def set_servo_p(self, p: int) -> None:
+        """Servo stiffness for the 5 arm joints (gripper untouched). Higher = faster, tighter tracking
+        but more shake. Call right after connect while the arm rests: torque is briefly disabled
+        (as LeRobot's own configure() does) because the register is in the servo's EEPROM area."""
+        lo, hi = SERVO_P_RANGE
+        if not lo <= int(p) <= hi:
+            raise ValueError(f"servo P must be in [{lo}, {hi}], got {p}")
+        bus = self._dev.bus
+        with bus.torque_disabled():
+            for motor in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"):
+                bus.write("P_Coefficient", motor, int(p))
 
     def send(self, q: np.ndarray) -> np.ndarray:
         q = np.asarray(q, dtype=float)

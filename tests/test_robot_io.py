@@ -182,7 +182,9 @@ def test_make_configs(monkeypatch):
     monkeypatch.setattr(sf, "SO101FollowerConfig", FakeCfg)
     monkeypatch.setattr(sf, "SO101Follower", lambda cfg: "dev")
     assert FollowerArm("COM3")._make() == "dev"
-    assert seen["max_relative_target"] == 10.0 and seen["id"] == "cta_follower" and seen["port"] == "COM3"
+    from cta.robot_io import MAX_RELATIVE_TARGET_DEG
+    assert MAX_RELATIVE_TARGET_DEG == 15.0
+    assert seen["max_relative_target"] == MAX_RELATIVE_TARGET_DEG and seen["id"] == "cta_follower" and seen["port"] == "COM3"
 
 
 def test_pipeline_reset_to():
@@ -211,3 +213,30 @@ def test_select_command_coast_keeps_moving_toward_target():
     target = prev + 0.3
     q = select_command("mirror", "COAST", target, None, prev, 1 / 60, np.radians(90))
     assert np.all(q > prev)
+
+
+def test_set_servo_p_writes_arm_motors_only_with_torque_guard():
+    from contextlib import contextmanager
+
+    writes, guarded = [], []
+
+    class Bus:
+        @contextmanager
+        def torque_disabled(self):
+            guarded.append("in")
+            yield
+            guarded.append("out")
+
+        def write(self, reg, motor, val):
+            writes.append((reg, motor, val))
+
+    class Dev:
+        bus = Bus()
+
+    arm = FollowerArm("COM3", device=Dev())
+    arm.set_servo_p(24)
+    assert {m for _, m, _ in writes} == {"shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"}
+    assert all(r == "P_Coefficient" and v == 24 for r, _, v in writes)
+    assert guarded == ["in", "out"]
+    with pytest.raises(ValueError):
+        arm.set_servo_p(64)
