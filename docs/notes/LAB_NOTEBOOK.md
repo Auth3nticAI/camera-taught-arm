@@ -33,4 +33,19 @@ Dated entries: what was tried, what broke, what was learned, numbers, and screen
   - each recorded frame stores tracking status and smoother on/off, so Plan 2 can mask frames.
 - **Workspace box:** x 0.222–0.443 m, y −0.335–0.332 m, z 0.02–0.25 m (base frame). It's derived from reachable poses at table height; the first version had only 5 cm of forward reach.
 - **Ready pose:** joints [0, −0.6, 0.9, 0, 0, 0.6] rad puts the gripper at (0.315, −0.001, 0.155) m.
-- **Course-text tie-in:** this layer is classical (geometry + IK). It is the *teacher* and baseline that the Plan 2 networks (ch. 6 MLP, ch. 4.4 time windows) must beat.
+- **Course-text tie-in:** this layer is classical (geometry + IK).
+
+## 2026-10-17 (evening) · Follower arrived: calibration + alignment attempt
+- **Calibration:** the follower is on COM4 (CH343 driver). `lerobot-calibrate` with id `cta_follower`. The first attempt recorded shoulder/elbow ranges of 0–4095 (a glitch or wrap), so it was redone. Final ranges are sensible (shoulder_lift 816–3088, elbow 914–3133, etc.).
+- **Read-only probe** (torque off): the calibration matches the motors and all readings are finite. Folded rest = shoulder −99.6°, elbow +96°, at the stops.
+- **Directions:** the twin at the folded-rest reading matched the real arm visually, and zero in LeRobot = the calibration "middle" pose in MuJoCo.
+- **Alignment tool built** (`python -m cta.apps.align_follower`): you touch the table with the limp arm and least-squares solves the joint offsets.
+  - First version let the table height float, so the shoulder and wrist offsets ran to ±15° and cancelled each other. Fixed: the table is pinned to the base bottom (−2.4 mm), there's a weak prior, and an untrusted fit can't be written.
+  - Tests were reading the real data folder; isolated them with conftest.py.
+- **OPEN ISSUE (blocks real-arm mirroring):**
+  - In stretched-out poses with the jaws on the table, the motors read shoulder ≈ +15°, elbow ≈ −7°. The twin shows the arm upright with the jaws level about 15 cm *above* the table.
+  - Near-base poses agree within ~1 cm. So shoulder and/or elbow disagree with the simulator by tens of degrees in the reaching region.
+  - **Unsafe direction:** the sim thinks the gripper is higher than it is, so the 2 cm table clamp would not protect the real arm.
+  - Next step: a side photo of the real arm in that pose next to the twin, to identify the joint. Then either recalibrate or apply the corrected offset/sign.
+  - Captures are saved in `cta-data/align_poses.npz`. The rejected maps are kept as `sim_real_map.rejected-*.json`.
+  - Real-arm mirroring is on hold, and the app refuses without a map, by design. It is the *teacher* and baseline that the Plan 2 networks (ch. 6 MLP, ch. 4.4 time windows) must beat.
