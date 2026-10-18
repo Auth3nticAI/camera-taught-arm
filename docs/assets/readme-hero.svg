@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
+<title id="title">Camera Taught Arm — Human motion. Machine movement.</title>
+<desc id="desc">Hand landmarks and an articulated robot arm on a dark technical drawing.</desc>
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#101a22"/><stop offset="1" stop-color="#0a1017"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#a2bcc8" stroke-opacity=".07"/></pattern>
+</defs>
+<rect width="1280" height="520" rx="18" fill="url(#bg)"/>
+<rect x="740" y="90" width="496" height="345" fill="url(#grid)"/>
+<path d="M48 79H1232" stroke="#34404a"/>
+<circle cx="55" cy="45" r="5" fill="#71e4bf"/>
+<text x="74" y="51" fill="#eef4ef" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="600" letter-spacing="1">CAMERA TAUGHT ARM</text>
+<text x="1232" y="50" text-anchor="end" fill="#94a5ae" font-family="Consolas,monospace" font-size="12" letter-spacing="2">THE TEACH LAYER / 01</text>
+<text x="48" y="148" fill="#71e4bf" font-family="Consolas,monospace" font-size="13" letter-spacing="2">LEARNING FROM DEMONSTRATION</text>
+<g font-family="Segoe UI,Arial,sans-serif" font-size="69" font-weight="700" letter-spacing="-3">
+  <text x="44" y="231" fill="#f1f3eb">Human motion.</text>
+  <text x="44" y="310" fill="#71e4bf">Machine movement.</text>
+</g>
+<text x="48" y="363" fill="#a7b7bf" font-family="Segoe UI,Arial,sans-serif" font-size="19">A webcam-to-robot pipeline, built one demonstration at a time.</text>
+<g font-family="Consolas,monospace" font-size="12" letter-spacing="1">
+  <rect x="48" y="402" width="141" height="30" rx="15" fill="#173830"/><text x="118" y="422" text-anchor="middle" fill="#8feacb">HAND TRACKING</text>
+  <rect x="199" y="402" width="136" height="30" rx="15" fill="#1d2b38"/><text x="267" y="422" text-anchor="middle" fill="#b6c9dc">DIGITAL TWIN</text>
+  <rect x="345" y="402" width="118" height="30" rx="15" fill="#3a2c23"/><text x="404" y="422" text-anchor="middle" fill="#ffc494">RECORDING</text>
+</g>
+<g fill="none" stroke="#71e4bf" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M855 323L805 272L782 260L769 242 M805 272L811 225L801 197L795 177 M811 225L835 216L835 184L833 159 M835 216L859 222L867 191L874 174 M859 222L879 238L897 215L910 202 M879 238L880 288L855 323L811 225 M855 323L835 216 M855 323L859 222"/>
+</g>
+<g fill="#71e4bf"><circle cx="855" cy="323" r="5"/><circle cx="805" cy="272" r="4"/><circle cx="782" cy="260" r="3"/><circle cx="769" cy="242" r="3"/><circle cx="811" cy="225" r="4"/><circle cx="801" cy="197" r="3"/><circle cx="795" cy="177" r="3"/><circle cx="835" cy="216" r="4"/><circle cx="835" cy="184" r="3"/><circle cx="833" cy="159" r="3"/><circle cx="859" cy="222" r="4"/><circle cx="867" cy="191" r="3"/><circle cx="874" cy="174" r="3"/><circle cx="879" cy="238" r="4"/><circle cx="897" cy="215" r="3"/><circle cx="910" cy="202" r="3"/><circle cx="880" cy="288" r="4"/></g>
+<path d="M925 267H969 M963 261L969 267L963 273" fill="none" stroke="#6a7e8d" stroke-width="2"/>
+<g stroke-linecap="round" stroke-linejoin="round">
+  <path d="M1038 350L1018 282L1088 205L1154 243" fill="none" stroke="#ffb078" stroke-width="16"/>
+  <g fill="#111a23" stroke="#ffb078" stroke-width="3"><circle cx="1018" cy="282" r="11"/><circle cx="1088" cy="205" r="11"/><circle cx="1154" cy="243" r="8"/></g>
+  <path d="M1162 243L1178 231L1193 236 M1162 243L1178 260L1193 253" fill="none" stroke="#ffb078" stroke-width="4"/>
+  <path d="M1004 361H1073" stroke="#b4c0c8" stroke-width="7"/>
+</g>
+<g font-family="Consolas,monospace" font-size="10" letter-spacing="1.4" fill="#91a4af"><text x="840" y="398" text-anchor="middle">HUMAN INPUT</text><text x="1100" y="398" text-anchor="middle">ROBOT MOTION</text></g>
+<path d="M48 470H1232" stroke="#34404a"/>
+<text x="48" y="497" fill="#94a5ae" font-family="Consolas,monospace" font-size="11" letter-spacing="1">OBSERVE / TRANSLATE / CAPTURE</text>
+<text x="1232" y="497" text-anchor="end" fill="#94a5ae" font-family="Consolas,monospace" font-size="11" letter-spacing="1">PYTORCH + MEDIAPIPE + MUJOCO</text>
+</svg>

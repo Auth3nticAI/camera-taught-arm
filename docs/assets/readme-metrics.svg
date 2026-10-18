@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="168" viewBox="0 0 1280 168" role="img" aria-labelledby="title desc">
+<title id="title">Workbench measurements</title>
+<desc id="desc">October 17, 2026 webcam and simulation smoke test: 59.4 FPS camera, approximately 60 FPS app loop, 11.7 ms camera-to-command latency, and 53 FPS with recording.</desc>
+<rect x="1" y="1" width="1278" height="166" rx="14" fill="#101a22" stroke="#34404a"/>
+<path d="M320 30V138 M640 30V138 M960 30V138" stroke="#34404a"/>
+<g font-family="Consolas,monospace" font-size="12" letter-spacing="1.6" fill="#a8bac6"><text x="30" y="38">CAMERA / 1080P</text><text x="350" y="38">APP LOOP</text><text x="670" y="38">CAMERA TO COMMAND</text><text x="990" y="38">RECORDING ENABLED</text></g>
+<g font-family="Segoe UI,Arial,sans-serif" font-size="50" font-weight="700" letter-spacing="-2"><text x="28" y="103" fill="#71e4bf">59.4<tspan font-size="18" letter-spacing="0" fill="#a8bac6"> FPS</tspan></text><text x="348" y="103" fill="#f1f3eb">~60<tspan font-size="18" letter-spacing="0" fill="#a8bac6"> FPS</tspan></text><text x="668" y="103" fill="#ffb078">11.7<tspan font-size="18" letter-spacing="0" fill="#a8bac6"> ms</tspan></text><text x="988" y="103" fill="#f1f3eb">53<tspan font-size="18" letter-spacing="0" fill="#a8bac6"> FPS</tspan></text></g>
+<g font-family="Segoe UI,Arial,sans-serif" font-size="13" fill="#94a5ae"><text x="30" y="138">Measured camera rate</text><text x="350" y="138">Simulation run</text><text x="670" y="138">Measured latency</text><text x="990" y="138">Session capture active</text></g>
+</svg>
