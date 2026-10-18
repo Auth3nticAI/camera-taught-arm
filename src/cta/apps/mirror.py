@@ -142,6 +142,9 @@ def main(argv: list[str] | None = None) -> int:
                          "hand: the hand alone drives the gripper position (IK)")
     ap.add_argument("--pose-min-vis", type=float, default=POSE_MIN_VIS,
                     help=f"--control arm: min visibility/presence of the tracked arm + shoulders (default {POSE_MIN_VIS})")
+    ap.add_argument("--arm-mapping", choices=["flipped", "direct"], default="flipped",
+                    help="arm mode: flipped = your hanging arm drives the robot's standing arm (default); "
+                         "direct = literal copy of your arm's direction")
     ap.add_argument("--table-margin", type=float, default=TABLE_CLEARANCE_M,
                     help=f"metres the arm must stay above the table, pipeline + sent commands (default "
                          f"{TABLE_CLEARANCE_M}; +1 mm is added internally for the fast contact model)")
@@ -166,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="--robot so101: run without sim_real_map.json (identity sign/offset; unsafe unless verified)")
     ap.add_argument("--max-frames", type=int, default=0, help="exit after N frames (smoke run)")
     args = ap.parse_args(argv)
+    if not 0.0 <= args.table_margin <= 0.05:
+        ap.error(f"--table-margin must be between 0 and 0.05 m (got {args.table_margin})")
 
     if args.autostart_record and not args.record:
         ap.error("--autostart-record requires --record NAME")
@@ -233,7 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         smoother = OneEuro(beta=args.smooth_beta)
         if args.control == "arm":
             pipe = ArmPosePipeline(kin, cal, gains, smoother, aspect=aspect, mirrored=args.mirrored, want=args.hand,
-                                   pose_min_vis=args.pose_min_vis, table_margin=args.table_margin)
+                                   pose_min_vis=args.pose_min_vis, table_margin=args.table_margin,
+                                   flip=args.arm_mapping == "flipped")
             contact = pipe.contact  # one MuJoCo contact model, shared with the send-path clearance check
         else:
             pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
@@ -417,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
                     guarded = guard_why is not None
                     if guarded and time.perf_counter() - last_guard_warn >= WARN_EVERY_S:
                         last_guard_warn = time.perf_counter()
-                        print("holding: next step would go below the table margin — move your hand up")
+                        print("holding: next step would go below the table margin - raise your arm/hand")
                     try:
                         sent = follower.send(q_new)
                         prev = q_new

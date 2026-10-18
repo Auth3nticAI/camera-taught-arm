@@ -216,9 +216,10 @@ class ArmPosePipeline(_PipelineBase):
     def __init__(self, kin: Kinematics, cal: Calibration | None, gains: MapGains,
                  smoother: OneEuro | None, max_step_rad: float = 0.15, aspect: float = 16 / 9,
                  mirrored: bool = False, want: str = "left", pose_min_vis: float = POSE_MIN_VIS,
-                 contact=None, table_margin: float = TABLE_CLEARANCE_M):
+                 contact=None, table_margin: float = TABLE_CLEARANCE_M, flip: bool = True):
         super().__init__(kin, cal, gains, smoother, max_step_rad, aspect)
         self.table_margin = table_margin
+        self.flip = flip  # vertical-reflection arm mapping (see arm_angles.arm_joint_angles)
         if contact is None:
             contact = clearance_model()
         self.contact = contact
@@ -289,7 +290,7 @@ class ArmPosePipeline(_PipelineBase):
         elif self._hand_seen_t is None or t - self._hand_seen_t > HAND_ENGAGE_S:
             return self.q_cmd.copy(), "NO HAND"  # body alone is not engagement: present the hand
         pan, lift, elbow, pan_valid = arm_joint_angles(pose_obs.world, side, self.mirrored, self._pan,
-                                                       self._pan_valid, hips_ok)
+                                                       self._pan_valid, hips_ok, flip=self.flip)
         if not np.all(np.isfinite([pan, lift, elbow])):
             return self._lost(t)
         self.side = side

@@ -120,6 +120,13 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Why:** the blocks are 2.5 cm tall, and with a 2 cm margin the jaws can't reach a block's middle. The sim-to-real alignment error is about 3 mm, so 0.5 cm still keeps a buffer.
 - **Outcome:** —
 
+### D-R · 2026-10-18 · Flipped arm mapping (the robot's elbow must mimic Tray's)
+- **Problem:** in a literal copy, Tray's seated pose (upper arm hanging, forearm forward) sent the robot's upper arm down to its limit and folded the elbow down, putting the jaws on the floor. Tray: "it needs to inverse my elbow."
+- **Choice:** **flipped mapping is the default** (`--arm-mapping flipped`; the literal copy is `--arm-mapping direct`). The robot is Tray's arm reflected vertically: a hanging upper arm becomes the robot's standing upper arm, and a forward forearm stays forward (the robot's L pose). The elbow fold then matches the robot's natural fold.
+- **Also:** when the upper arm is vertical, the **forearm's direction swings the base**, so pointing the forearm left or right pans the robot.
+- **Verified:** tests check the robot's actual upper-arm and forearm directions, from the MuJoCo model, against Tray's arm reflected vertically, within 1°.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)

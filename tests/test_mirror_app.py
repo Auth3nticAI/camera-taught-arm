@@ -382,3 +382,9 @@ def test_table_margin_flag_reaches_pipeline_and_send_path(monkeypatch, tmp_path)
     monkeypatch.setattr(mirror, "next_command", next_spy)
     assert _arm_run(monkeypatch, tmp_path, ["--table-margin", "0.03"], frames=10) == 0
     assert seen["pipe"] == [0.03] and set(seen["send"]) == {0.03}
+
+
+@pytest.mark.parametrize("bad", ["-0.01", "0.2"])
+def test_table_margin_out_of_range_is_rejected(bad):
+    with pytest.raises(SystemExit):
+        mirror.main(["--robot", "none", "--table-margin", bad])

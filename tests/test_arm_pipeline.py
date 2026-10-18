@@ -46,6 +46,7 @@ def pose(az=0.0, elev=90.0, flex=60.0, side="left", mirrored=False):
 
 
 def calibrated(kin, gains, **kw):
+    kw.setdefault("flip", False)  # these tests pin the DIRECT mapping math; flipped is tested in test_arm_angles
     p = ArmPosePipeline(kin, None, gains, None, **kw)
     p.calibrate(hand())
     return p
@@ -58,7 +59,7 @@ def run(p, hand_obs, pose_obs, n=60, t0=0.0):
 
 
 def test_uncalibrated_holds_ready(kin, gains):
-    p = ArmPosePipeline(kin, None, gains, None)
+    p = ArmPosePipeline(kin, None, gains, None, flip=False)
     q, s = p.step(hand(), 0.0, pose())
     assert s == "UNCALIBRATED" and np.allclose(q, READY_Q)
     assert p.last_features is not None
@@ -168,7 +169,7 @@ def test_mirrored_pipeline_matches_unmirrored(kin, gains):
 
 
 def test_reset_to_and_surface(kin, gains):
-    p = ArmPosePipeline(kin, None, gains, None)
+    p = ArmPosePipeline(kin, None, gains, None, flip=False)
     p.reset_to(np.full(6, 10.0))
     assert np.all(p.q_cmd <= SIM_LIMITS[:, 1])
     for name in ("step", "calibrate", "set_pinch_closed", "reset_to", "set_smoother", "q_cmd", "cal",
@@ -320,3 +321,7 @@ def test_table_margin_is_threaded_into_clear_table(kin, gains, contact):
     assert contact.lowest_z(q) >= contact.table_z + big + CLEARANCE_PAD_M - 1e-3
     assert contact.lowest_z(clear_table(np.array([0.0, D(95), D(16), 0, 0, 0.5]), contact, big)) >= \
         contact.table_z + big + CLEARANCE_PAD_M - 1e-3
+
+
+def test_default_pipeline_uses_flipped_mapping(kin, gains):
+    assert ArmPosePipeline(kin, None, gains, None).flip is True

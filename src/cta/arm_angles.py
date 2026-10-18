@@ -87,8 +87,17 @@ def choose_arm_side(pose_img: np.ndarray, hand_wrist_uv, last_side: str | None, 
 
 
 def arm_joint_angles(world: np.ndarray, side: str, mirrored: bool, prev_pan: float,
-                     prev_valid: bool = True, hips_ok: bool = True) -> tuple[float, float, float, bool]:
+                     prev_valid: bool = True, hips_ok: bool = True,
+                     flip: bool = False) -> tuple[float, float, float, bool]:
     """(pan, lift, elbow, pan_valid) in robot radians for the user's `side` arm (lift/elbow unclamped).
+
+    flip=True (Tray 2026-10-18, the default in the app): the robot is the user's arm reflected
+    vertically - the user's shoulder is at the top with the arm hanging down, the robot's shoulder is at
+    the bottom with the arm standing up. So a hanging upper arm drives a STANDING robot upper arm and a
+    forward forearm stays forward (the robot's L pose). Elevation e -> pi - e; the fold direction then
+    matches the robot's natural fold, so elbow = flexion - ELBOW_OFFSET is unchanged.
+    When the upper arm is near vertical (azimuth undefined), the FOREARM's azimuth points the base, so a
+    seated user can swing the robot by pointing the forearm left/right.
 
     pan = -azimuth (azimuth: 0 = forward, + = toward the user's left; +pan swings the robot gripper
     toward its right, -y), unwrapped toward prev_pan. pan_valid False (and pan = prev_pan) when:
@@ -101,12 +110,17 @@ def arm_joint_angles(world: np.ndarray, side: str, mirrored: bool, prev_pan: flo
     sh, el, wr = _SIDE[side]
     a, b = w[el] - w[sh], w[wr] - w[el]
     na, nb = np.linalg.norm(a), np.linalg.norm(b)
-    lift = float(np.arccos(np.clip(a @ up / na, -1.0, 1.0))) - LIFT_OFFSET_RAD
+    elev = float(np.arccos(np.clip(a @ up / na, -1.0, 1.0)))
+    lift = (np.pi - elev if flip else elev) - LIFT_OFFSET_RAD
     flex = float(np.arccos(np.clip(a @ b / (na * nb), -1.0, 1.0)))
     elbow = flex - ELBOW_OFFSET_RAD
     af, al = float(a @ fwd), float(a @ left)
-    if np.hypot(af, al) < (PAN_INVALID_FRAC if prev_valid else PAN_VALID_FRAC) * na:
-        return float(prev_pan), lift, elbow, False
+    frac = PAN_INVALID_FRAC if prev_valid else PAN_VALID_FRAC
+    if np.hypot(af, al) < frac * na:
+        bf, bl = float(b @ fwd), float(b @ left)
+        if np.hypot(bf, bl) < frac * nb:  # upper arm AND forearm vertical: azimuth undefined, hold
+            return float(prev_pan), lift, elbow, False
+        af, al = bf, bl  # upper arm vertical: the forearm points the base
     pan = float(prev_pan + (-np.arctan2(al, af) - prev_pan + np.pi) % (2 * np.pi) - np.pi)
     if abs(pan) > PAN_MAX_RAD:
         return float(prev_pan), lift, elbow, False

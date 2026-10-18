@@ -199,3 +199,46 @@ def test_pan_max_matches_joint_limit_and_margin():
     from cta.arm_angles import PAN_MAX_RAD
     from cta.config import SIM_LIMITS
     assert PAN_MAX_RAD == pytest.approx(min(-SIM_LIMITS[0, 0], SIM_LIMITS[0, 1]) - 0.087)
+
+
+# ---- flipped mapping (Tray 2026-10-18): the robot stands up where the user's arm hangs down ----------
+
+def _flip(v):
+    return np.array([v[0], v[1], -v[2]])
+
+
+def test_flipped_seated_pose_is_robot_L_pose(kin):
+    a, b = np.array([0.0, 0.0, -1.0]), np.array([1.0, 0.0, 0.0])  # upper arm down, forearm forward
+    _, world = make_body(a, b, side="left")
+    pan, lift, elbow, _ = arm_joint_angles(world, "left", False, 0.0, flip=True)
+    ra, rb = robot_arm_dirs(kin, [pan, lift, elbow, 0, 0, 0])
+    assert angle_deg(ra, [0, 0, 1]) < 1.0  # robot upper arm stands up
+    assert angle_deg(rb, [1, 0, 0]) < 1.0  # robot forearm points forward
+
+
+@pytest.mark.parametrize("az,elev,flex", [(0, 150, 60), (30, 120, 45), (-40, 135, 80), (0, 100, 30)])
+def test_flipped_robot_arm_is_users_arm_reflected_vertically(kin, az, elev, flex):
+    a = body_dir(az, elev)
+    b = bend(_flip(a), flex)  # build the robot-style fold on the reflected arm, then reflect back
+    b = _flip(b)
+    _, world = make_body(a, b, side="left")
+    pan, lift, elbow, valid = arm_joint_angles(world, "left", False, 0.0, flip=True)
+    ra, rb = robot_arm_dirs(kin, [pan, lift, elbow, 0, 0, 0])
+    assert angle_deg(ra, _flip(a)) < 1.0
+    assert angle_deg(rb, _flip(b)) < 1.0
+
+
+def test_flipped_forearm_points_base_when_upper_arm_vertical():
+    a = np.array([0.0, 0.0, -1.0])
+    b = body_dir(60, 90)  # forearm horizontal, 60 deg toward the user's left
+    _, world = make_body(a, b, side="left")
+    pan, _, _, valid = arm_joint_angles(world, "left", False, 0.0, flip=True)
+    assert valid and np.isclose(pan, -np.radians(60), atol=np.radians(1.0))
+
+
+def test_flipped_mirrored_image_gives_same_angles():
+    a, b = body_dir(20, 140), body_dir(20, 80)
+    _, w = make_body(a, b, side="left")
+    _, wm = make_body(a, b, side="left", mirrored=True)
+    assert np.allclose(arm_joint_angles(w, "left", False, 0.0, flip=True)[:3],
+                       arm_joint_angles(wm, "left", True, 0.0, flip=True)[:3], atol=1e-9)
