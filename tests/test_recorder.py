@@ -152,3 +152,32 @@ def test_pose_vis_and_presence_rows(tmp_path):
     assert d["pose_vis"].dtype == np.float32 and d["pose_presence"].dtype == np.float32
     assert np.allclose(d["pose_vis"][0], vis) and np.allclose(d["pose_presence"][0], 0.75)
     assert np.isnan(d["pose_vis"][1]).all() and np.isnan(d["pose_presence"][1]).all()
+
+
+def _count_frames(path):
+    import cv2
+    cap = cv2.VideoCapture(str(path))
+    n = 0
+    while cap.read()[0]:
+        n += 1
+    cap.release()
+    return n
+
+
+def test_robot_camera_video_has_one_frame_per_row(tmp_path):
+    with SessionRecorder(tmp_path, "s", {}, video_size=SIZE, robot_video_size=SIZE) as r:
+        for i in range(6):
+            robot = _rgb() if i % 3 else None  # robot camera missing on some rows -> black frame, ok=False
+            r.add(float(i), _obs(), _feats(), np.zeros(6), None, None, _rgb(),
+                  robot_rgb=robot, robot_t=None if robot is None else float(i) - 0.01)
+    s = load_session(tmp_path / "s")
+    assert _count_frames(tmp_path / "s" / "robot.mp4") == 6 == len(s["t"])
+    assert s["robot_cam_ok"].tolist() == [False, True, True, False, True, True]
+    assert np.isnan(s["robot_frame_t"][0]) and s["robot_frame_t"][1] == pytest.approx(0.99)
+
+
+def test_no_robot_video_by_default(tmp_path):
+    with SessionRecorder(tmp_path, "s", {}, video_size=SIZE) as r:
+        _add(r)
+    assert not (tmp_path / "s" / "robot.mp4").exists()
+    assert load_session(tmp_path / "s")["robot_cam_ok"].tolist() == [False]

@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 from cta.arm_angles import side_indices
-from cta.camera import Camera, CameraMode, camera_check
+from cta.camera import Camera, CameraMode, LatestFrameCamera, camera_check
 from cta.dashboard import Dashboard
 from cta.depth import DEPTH_MODEL_ID, DepthEstimator
 from cta.filters import OneEuro
@@ -171,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-speed-dps", type=float, default=90.0,
                     help="joint speed limit for commands sent to the arm, deg/s (default 90)")
     ap.add_argument("--camera", type=int, default=0)
+    ap.add_argument("--robot-camera", type=int, default=None,
+                    help="index of the robot's wrist camera (innomaker = 2 on Tray's desktop); recorded as "
+                         "robot.mp4 in every take and shown on the dashboard. Off when omitted.")
     ap.add_argument("--hand", choices=["right", "left"], default="right")
     ap.add_argument("--mirrored", action="store_true", help="camera image is already mirrored")
     ap.add_argument("--servo-p", type=int, default=DEFAULT_SERVO_P,
@@ -220,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
 
     wanted = CameraMode(1920, 1080, 60)
     cam = Camera(args.camera, wanted)
+    robot_cam = None
     tracker = pose_tracker = twin = depth_est = None
     depth_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depth")
     follower = leader = None
@@ -230,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
         if not cam.is_open():
             print(f"ERROR: camera {args.camera} did not open")
             return 1
+        if args.robot_camera is not None:
+            if args.robot_camera == args.camera:
+                print("ERROR: --robot-camera must be a different camera than --camera")
+                return 2
+            robot_cam = LatestFrameCamera(args.robot_camera, CameraMode(1280, 720, 30))
+            print(f"robot camera: index {args.robot_camera} (background reader; recorded as robot.mp4)")
         mode = cam.measure_mode()
         print(f"measured camera mode: {mode.width}x{mode.height} @ {mode.fps:.1f} fps")
         warns = camera_check(mode, wanted)
@@ -339,8 +349,10 @@ def main(argv: list[str] | None = None) -> int:
                 "reach_forward": getattr(pipe, "fwd_source", None),
                 "depth_model": DEPTH_MODEL_ID if getattr(pipe, "fwd_source", None) == "depth" else None,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "robot_camera": args.robot_camera,
             }
-            r = SessionRecorder(sessions_root, name, meta)
+            r = SessionRecorder(sessions_root, name, meta,
+                                robot_video_size=(640, 360) if robot_cam is not None else None)
             print(f"REC START: {r.dir}")
             return r
 
@@ -517,8 +529,12 @@ def main(argv: list[str] | None = None) -> int:
                     except Exception as e:  # bus error: hold prev, send nothing new
                         bus_err = e
                 q = prev
+            robot_rgb, robot_t = (None, None) if robot_cam is None else robot_cam.latest()[:2]
+            if robot_rgb is not None and not (t_frame - 0.5 <= robot_t <= t_frame + 0.05):
+                robot_rgb = None  # stale (camera stalled): record as missing rather than out of sync
             if rec is not None:
                 rec.add(t_frame, obs, pipe.last_features, q_baseline, q_leader, q_foll, rgb,
+                        robot_rgb=robot_rgb, robot_t=robot_t,
                         status=STATUS_CODES.get(status, STATUS_UNKNOWN),
                         smoother_on=int(pipe.smoother is not None),
                         pose_img=None if pose_obs is None else pose_obs.img,
@@ -556,6 +572,8 @@ def main(argv: list[str] | None = None) -> int:
             elif heavy and pose_obs is not None and getattr(pipe, "side", None) is not None:
                 idx = list(side_indices(pipe.side, args.mirrored))  # shoulder, elbow, wrist
                 arm_uv = pose_obs.img[idx, :2]  # arm mode: shoulder -> elbow -> wrist
+            if heavy and robot_rgb is not None:
+                dash.log_robot_camera(robot_rgb)
             dash.log_frame(rgb if heavy else None, obs if heavy else None, twin_rgb, q,
                            fps_ema, lat_ema, f"{status} REC" if rec is not None else status, loop_ema, extra_rad=extra,
                            arm_uv=arm_uv, reach_n=getattr(pipe, "last_n", None))
@@ -584,6 +602,8 @@ def main(argv: list[str] | None = None) -> int:
             keys.stop()
         depth_pool.shutdown(wait=True)
         cam.close()
+        if robot_cam is not None:
+            robot_cam.stop()
         if tracker is not None:
             tracker.close()
         if pose_tracker is not None:

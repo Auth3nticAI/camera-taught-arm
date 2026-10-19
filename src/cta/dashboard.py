@@ -17,6 +17,13 @@ class Dashboard:
         self._last_status: str | None = None
         self._arm_shown = False
 
+    def log_robot_camera(self, rgb: np.ndarray) -> None:
+        """The robot's wrist-camera view (downscaled, JPEG) under robot_camera/image."""
+        h, w = rgb.shape[:2]
+        if w > 640:
+            rgb = cv2.resize(rgb, (640, round(h * 640 / w)), interpolation=cv2.INTER_AREA)
+        rr.log("robot_camera/image", rr.Image(rgb).compress(jpeg_quality=70))
+
     def log_frame(self, rgb: np.ndarray | None, obs: HandObservation | None, twin_rgb: np.ndarray | None,
                   q_cmd: np.ndarray, fps: float, latency_ms: float, status: str,
                   loop_ms: float | None = None, extra_rad: dict[str, np.ndarray] | None = None,

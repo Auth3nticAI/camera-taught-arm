@@ -164,3 +164,12 @@ Final wrist-recovery verification: 238 tests passed in 45.34 seconds. git diff -
 - Final target (after the 0.25 m/s limit): p99 <= 1.25 cm, max 1.25 cm, 0 jumps > 3 cm, 0 side switches in all takes.
 - Trade-off: take 02's held share rose 6.2% -> 18.2% (215 frames "arm/body moved - press c to re-lock": the capped teleport check holds until the shoulders return or 'c'; replay never re-presses 'c').
 - Tests: 287 passed.
+
+## 2026-10-18 (evening) · Wrist camera recorded with every take
+- **New flag:** `--robot-camera 2` (the innomaker on the gripper) opens a background reader, so the second camera never slows the control loop.
+- Each take now saves `robot.mp4` (640×360, frame i ↔ row i) plus per-row `robot_cam_ok` and `robot_frame_t` for checking sync. Stale frames (> 0.5 s old) are recorded as missing rather than out of sync.
+- **Live smoke run (both real cameras, 120 frames):**
+  - 120/120 robot frames captured;
+  - robot frame age p50 49 ms, max 123 ms;
+  - loop ~40 fps in hand mode.
+- **Why:** robot-view footage is required for the next steps: object recognition, the autonomous pick policy (ACT needs the robot's viewpoint), and a sellable dataset (synced robot video + joints + gripper).

@@ -1,6 +1,7 @@
 """Session recorder: per-frame hand/arm data + video for Plan 2 training.
 
-Layout under <root>/<name>/: frames.npz, human.mp4 (frame i <-> row i), meta.json.
+Layout under <root>/<name>/: frames.npz, human.mp4 (frame i <-> row i), optional robot.mp4 (the robot's
+wrist camera, frame i <-> row i; per-row robot_cam_ok / robot_frame_t), meta.json.
 Joint vectors are radians; absent data is NaN.
 
 Per-row codes:
@@ -63,14 +64,15 @@ class SessionRecorder:
     _SHAPES = {"t": (), "hand_present": (), "lm_img": (21, 3), "lm_world": (21, 3), "feats": (6,),
                "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,), "status": (), "smoother_on": (),
                "pose_img": (33, 3), "pose_world": (33, 3), "pose_vis": (33,), "pose_presence": (33,),
-               "depth_hand": (), "depth_shoulder": (), "locked_side": ()}
+               "depth_hand": (), "depth_shoulder": (), "locked_side": (),
+               "robot_cam_ok": (), "robot_frame_t": ()}
     _DTYPES = {"hand_present": bool, "status": np.uint8, "smoother_on": np.int8,
                "pose_img": np.float32, "pose_world": np.float32, "pose_vis": np.float32,
                "pose_presence": np.float32, "depth_hand": np.float32, "depth_shoulder": np.float32,
-               "locked_side": np.int8}
+               "locked_side": np.int8, "robot_cam_ok": bool}
 
     def __init__(self, root: Path, name: str, meta: dict, autosave_s: float = 30.0,
-                 video_size: tuple[int, int] = (1280, 720)):
+                 video_size: tuple[int, int] = (1280, 720), robot_video_size: tuple[int, int] | None = None):
         self.dir = Path(root) / name
         self.dir.mkdir(parents=True, exist_ok=True)
         self.autosave_s = autosave_s
@@ -84,6 +86,14 @@ class SessionRecorder:
                                       VIDEO_FPS, self.video_size)
         if not self._video.isOpened():
             raise RuntimeError(f"cannot open video writer for {self.dir / 'human.mp4'}")
+        # robot.mp4: the robot's wrist-camera view, frame i <-> row i (black + robot_cam_ok False when missing)
+        self.robot_video_size = None if robot_video_size is None else tuple(robot_video_size)
+        self._robot_video = None
+        if self.robot_video_size is not None:
+            self._robot_video = cv2.VideoWriter(str(self.dir / "robot.mp4"), cv2.VideoWriter_fourcc(*"mp4v"),
+                                                VIDEO_FPS, self.robot_video_size)
+            if not self._robot_video.isOpened():
+                raise RuntimeError(f"cannot open video writer for {self.dir / 'robot.mp4'}")
         self._last_save = time.monotonic()
 
     def _alloc(self, k: str) -> np.ndarray:
@@ -95,7 +105,8 @@ class SessionRecorder:
             pose_img: np.ndarray | None = None, pose_world: np.ndarray | None = None,
             pose_vis: np.ndarray | None = None, pose_presence: np.ndarray | None = None,
             depth_hand: float | None = None, depth_shoulder: float | None = None,
-            locked_side: str | None = None) -> None:
+            locked_side: str | None = None, robot_rgb: np.ndarray | None = None,
+            robot_t: float | None = None) -> None:
         if self._closed:
             raise RuntimeError("recorder is closed")
         if self.n == self._cap:
@@ -124,6 +135,17 @@ class SessionRecorder:
         w, h = self.video_size
         frame = rgb if (rgb.shape[1], rgb.shape[0]) == (w, h) else cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
         self._video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))  # a row always gets a frame
+        b["robot_cam_ok"][i] = robot_rgb is not None
+        b["robot_frame_t"][i] = np.nan if robot_rgb is None or robot_t is None else robot_t
+        if self._robot_video is not None:
+            rw, rh = self.robot_video_size
+            if robot_rgb is None:
+                rf = np.zeros((rh, rw, 3), np.uint8)
+            elif (robot_rgb.shape[1], robot_rgb.shape[0]) == (rw, rh):
+                rf = robot_rgb
+            else:
+                rf = cv2.resize(robot_rgb, (rw, rh), interpolation=cv2.INTER_AREA)
+            self._robot_video.write(cv2.cvtColor(rf, cv2.COLOR_RGB2BGR))
         self.n += 1
         if time.monotonic() - self._last_save >= self.autosave_s:
             try:
@@ -161,6 +183,8 @@ class SessionRecorder:
         finally:
             self._closed = True
             self._video.release()
+            if self._robot_video is not None:
+                self._robot_video.release()
 
     def __enter__(self) -> "SessionRecorder":
         return self

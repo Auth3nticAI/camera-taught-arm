@@ -98,6 +98,10 @@ class FakeTwin:
 class FakeDash:
     arm_points = []
     reach = []
+    robot_frames = 0
+
+    def log_robot_camera(self, rgb):
+        FakeDash.robot_frames += 1
 
     def log_frame(self, *a, **k):
         if k.get("arm_uv") is not None:
@@ -516,3 +520,39 @@ def test_fwd_gain_flag_reaches_the_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(mirror, "ReachPipeline", spy)
     assert _arm_run(monkeypatch, tmp_path, ["--fwd-gain", "0.4"], frames=5, control="reach") == 0
     assert seen == [0.4]
+
+
+class FakeRobotCam:
+    started = stopped = 0
+
+    def __init__(self, *a, **k):
+        FakeRobotCam.started += 1
+
+    def latest(self):
+        return np.full((36, 64, 3), 128, np.uint8), time.perf_counter(), 1
+
+    def stop(self):
+        FakeRobotCam.stopped += 1
+
+
+def test_robot_camera_is_recorded_and_stopped(monkeypatch, tmp_path):
+    from cta.recorder import load_session
+    for name, obj in [("Camera", FakeCam), ("HandTracker", FakeTracker), ("Twin", FakeTwin),
+                      ("Dashboard", FakeDash), ("LatestFrameCamera", FakeRobotCam)]:
+        monkeypatch.setattr(mirror, name, obj)
+    monkeypatch.setattr(mirror, "_start_keys", lambda ev: None)
+    monkeypatch.setenv("CTA_DATA_DIR", str(tmp_path))
+    FakeRobotCam.started = FakeRobotCam.stopped = 0
+    rc = mirror.main(["--robot", "none", "--control", "hand", "--record", "t", "--autostart-record",
+                      "--max-frames", "6", "--robot-camera", "2", "--calib", str(_save_cal(tmp_path))])
+    assert rc == 0 and FakeRobotCam.started == 1 and FakeRobotCam.stopped == 1
+    take = tmp_path / "sessions" / "t_01"
+    assert (take / "robot.mp4").exists()
+    s = load_session(take)
+    assert len(s["t"]) >= 5 and s["robot_cam_ok"].all()
+
+
+def test_robot_camera_must_differ_from_main_camera(monkeypatch, tmp_path):
+    monkeypatch.setattr(mirror, "Camera", FakeCam)
+    monkeypatch.setenv("CTA_DATA_DIR", str(tmp_path))
+    assert mirror.main(["--robot", "none", "--camera", "0", "--robot-camera", "0", "--max-frames", "1"]) == 2

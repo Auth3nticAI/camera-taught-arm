@@ -81,6 +81,44 @@ class Camera:
         self.cap.release()
 
 
+class LatestFrameCamera:
+    """Reads a camera on a background thread and keeps only the newest frame, so a second camera (the
+    robot's wrist camera) never slows the control loop. latest() -> (rgb copy | None, t, frame_id)."""
+
+    def __init__(self, index: int | None = None, wanted: CameraMode | None = None, camera=None):
+        import threading
+
+        self._cam = camera if camera is not None else Camera(index, wanted or CameraMode(1280, 720, 30))
+        self._lock = threading.Lock()
+        self._frame: np.ndarray | None = None
+        self._t = float("nan")
+        self._id = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="robot-camera", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                frame, t = self._cam.read()
+            except Exception:  # a flaky USB camera must never kill the control loop
+                frame, t = None, time.perf_counter()
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            with self._lock:
+                self._frame, self._t, self._id = frame, t, self._id + 1
+
+    def latest(self) -> tuple[np.ndarray | None, float, int]:
+        with self._lock:
+            return (None if self._frame is None else self._frame.copy()), self._t, self._id
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+        self._cam.close()
+
+
 def list_cameras(max_index: int = 6) -> list[tuple[int, int, int]]:
     found = []
     for i in range(max_index):
