@@ -123,6 +123,8 @@ def test_window_median_is_time_based():
 
 def pose(az=0.0, elev=90.0, flex=0.0, side="left", mirrored=False, vis=1.0):
     img, world = _body(az, elev, flex, side, mirrored)
+    img = img.copy()
+    img[:, 1] += 0.4  # realistic framing: head (face) in view above the shoulders, not off the top
     po = PoseObservation(img, world, 0.9, np.full(33, vis), np.ones(33))
     po.mirrored_input = mirrored
     po.side = side
@@ -616,3 +618,44 @@ def test_depth_fields_are_per_frame(kin, gains):
     assert np.isfinite(p.depth_hand)  # recorded whenever measured
     p.step(hand(po), 0.02, po, None)
     assert np.isnan(p.depth_hand) and np.isfinite(p.depth_shoulder)
+
+
+# ---- face gate (review B1, 2026-10-18): shoulders only count when the face is in view ABOVE them ---------
+
+def test_head_out_of_frame_holds(kin, gains):
+    """Recorded take 02: Tray stood up, head/shoulders left the frame, Pose put confident 'shoulders' on
+    the torso. With no face in view, shoulder readings are not trusted: hold."""
+    from cta.pipeline import FACE_REASON
+    p = calibrated(kin, gains)
+    po = pose()
+    q0, _ = p.step(hand(po), 0.0, po, depth(po))
+    standing = pose()
+    standing.img[[0, 2, 5], 1] = -0.05  # face above the top of the image
+    q1, s = p.step(hand(po), 0.04, standing, depth(po))
+    assert s != "TRACKING" and np.array_equal(q0, q1) and p.tracking_hold_reason == FACE_REASON
+
+
+def test_phantom_shoulders_below_the_face_line_never_accepted(kin, gains):
+    """Hallucinated shoulders on the torso that hold steady for > SHOULDER_CONFIRM_FRAMES are still
+    rejected when the face is not above them (here: face below the phantom 'shoulders')."""
+    from cta.pipeline import SHOULDER_CONFIRM_FRAMES
+    p = calibrated(kin, gains)
+    po = pose()
+    q0, _ = p.step(hand(po), 0.0, po, depth(po))
+    phantom = pose()
+    phantom.img[[11, 12], 1] += 0.35            # 'shoulders' jumped down onto the torso ...
+    phantom.img[[0, 2, 5], 1] = phantom.img[11, 1] + 0.05  # ... and the face is not above them
+    t = 0.04
+    for _ in range(SHOULDER_CONFIRM_FRAMES * 3):
+        q, s = p.step(hand(po), t, phantom, depth(po))
+        assert s != "TRACKING" and np.array_equal(q, q0)
+        t += 0.04
+
+
+def test_low_visibility_face_holds(kin, gains):
+    p = calibrated(kin, gains)
+    po = pose()
+    p.step(hand(po), 0.0, po, depth(po))
+    dim = pose()
+    dim.vis[[0, 2, 5]] = 0.1
+    assert p.step(hand(po), 0.04, dim, depth(po))[1] != "TRACKING"

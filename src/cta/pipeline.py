@@ -49,6 +49,11 @@ GLITCH_REASON = "shoulder jump rejected (glitch)"
 # becomes the new baseline automatically. Safe: reach is measured hand-relative-to-shoulder, so a body
 # shift with the hand still relative to it doesn't move the target.
 SHOULDER_CONFIRM_FRAMES = 5
+# Review B1 (2026-10-18): in recorded take 02 Tray stood up, his head left the frame and Pose put confident
+# "shoulders" on his torso/forearm that held steady for 5 frames. Shoulders only count when the FACE (nose +
+# both eyes) is in view, visible, and above them; otherwise hold (applies to every frame, not just jumps).
+FACE_IDX = (0, 2, 5)  # nose, left eye, right eye
+FACE_REASON = "face not in view above the shoulders (shoulders not trusted)"
 SHOULDER_CONSISTENT_TOL = 0.04  # image units: frames within this of each other count as "consistent"
 DEPTH_MEDIAN_FRAMES = 3  # reach: median over the last N hand-shoulder depth differences (measurement denoise)
 HAND_POINT = "wrist"     # reach: hand tracker point for "where" ("wrist" = lm 0, "palm" = mean of 0,5,9,13,17)
@@ -602,6 +607,11 @@ class ReachPipeline(_BodyPipeline):
         0.08 + 0.8 * min(dt, 0.1 s) from the last good shoulders is rejected as a glitch for that frame; a new
         position consistent for SHOULDER_CONFIRM_FRAMES frames is accepted as a real move."""
         shoulders = np.asarray(pose_obs.img[[11, 12], :2], dtype=float)
+        face = np.asarray(pose_obs.img[list(FACE_IDX), :2], dtype=float)
+        face_q = np.minimum(np.asarray(pose_obs.vis)[list(FACE_IDX)], np.asarray(pose_obs.presence)[list(FACE_IDX)])
+        if (not np.all(np.isfinite(face)) or np.any(face < 0.0) or np.any(face > 1.0)
+                or np.any(face_q < self.pose_min_vis) or face[:, 1].max() >= shoulders[:, 1].min()):
+            return FACE_REASON
         span = float(np.linalg.norm(shoulders[0] - shoulders[1]))
         if np.any(shoulders < 0.02) or np.any(shoulders > 0.98):
             return "shoulders outside camera view"

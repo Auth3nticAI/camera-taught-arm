@@ -116,7 +116,8 @@ class LatestFrameCamera:
     def stop(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2.0)
-        self._cam.close()
+        if not self._thread.is_alive():  # releasing a capture mid-read can crash natively; daemon exits anyway
+            self._cam.close()
 
 
 def list_cameras(max_index: int = 6) -> list[tuple[int, int, int]]:

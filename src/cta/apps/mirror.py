@@ -224,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     wanted = CameraMode(1920, 1080, 60)
     cam = Camera(args.camera, wanted)
     robot_cam = None
+    depth_broken = False
     tracker = pose_tracker = twin = depth_est = None
     depth_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depth")
     follower = leader = None
@@ -240,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             robot_cam = LatestFrameCamera(args.robot_camera, CameraMode(1280, 720, 30))
             print(f"robot camera: index {args.robot_camera} (background reader; recorded as robot.mp4)")
+            t_wait = time.perf_counter()
+            while robot_cam.latest()[0] is None and time.perf_counter() - t_wait < 2.0:
+                time.sleep(0.05)
+            if robot_cam.latest()[0] is None:
+                print(f"WARNING: robot camera {args.robot_camera} gave no frames in 2 s - wrong index or busy? "
+                      "robot.mp4 will be black (robot_cam_ok False) until it starts")
         mode = cam.measure_mode()
         print(f"measured camera mode: {mode.width}x{mode.height} @ {mode.fps:.1f} fps")
         warns = camera_check(mode, wanted)
@@ -419,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"!! WARNING: depth model failed ({type(e).__name__}: {e}); "
                           "reach forward continues on the hand-scale cue")
                     depth_est, depth_map = None, None  # stop submitting
+                    depth_broken = True  # don't wait on a possibly hung GPU worker at exit
                     pipe.depth_failed()
             n_frames += 1
             if "c" in events:
@@ -600,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"WARNING: arm disconnect failed: {e}")
         if keys is not None:
             keys.stop()
-        depth_pool.shutdown(wait=True)
+        depth_pool.shutdown(wait=not depth_broken, cancel_futures=depth_broken)
         cam.close()
         if robot_cam is not None:
             robot_cam.stop()

@@ -357,7 +357,10 @@ def _arm_run(monkeypatch, tmp_path, extra, frames=120, control="arm"):
     from cta.hands import HandObservation
     from cta.pose import PoseObservation
     a = body_dir(30, 60)
-    FakePose.obs = PoseObservation(*make_body(a, bend(a, 40)), 0.9, np.ones(33), np.ones(33))
+    img, world = make_body(a, bend(a, 40))
+    img = img.copy()
+    img[:, 1] += 0.4  # realistic framing: face in view above the shoulders (reach face gate)
+    FakePose.obs = PoseObservation(img, world, 0.9, np.ones(33), np.ones(33))
     FakeTracker.obs = HandObservation(*make_hand(wrist_uv=tuple(FakePose.obs.img[15, :2])), "left", 0.9)
     STATE["clock"] = 0.0
     STATE["deadband"] = 0.0  # the fake follower reaches each command, so the lead bound lets it move

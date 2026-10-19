@@ -173,3 +173,19 @@ Final wrist-recovery verification: 238 tests passed in 45.34 seconds. git diff -
   - robot frame age p50 49 ms, max 123 ms;
   - loop ~40 fps in hand mode.
 - **Why:** robot-view footage is required for the next steps: object recognition, the autonomous pick policy (ACT needs the robot's viewpoint), and a sellable dataset (synced robot video + joints + gripper).
+
+## 2026-10-18 (night) · Face gate for shoulder trust (review B1)
+- **Review finding:** with Tray's 5-frame rule alone, take 02 accepted 5 Pose hallucinations. Tray had stood up with his head out of frame, and Pose put confident "shoulders" on his torso and forearm. That produced raw target jumps of 14–23 cm (box-bounded and speed-limited, but uncommanded).
+- **Fix:** shoulders only count when the face (nose + both eyes) is in view, visible, and above them, on every frame.
+- **Replay take 02:**
+  - phantom acceptances: 5 → 0;
+  - raw max jump: 11.9 → 8.1 cm;
+  - post-gap jump: 22.8 → 15.2 cm;
+  - held: 8.1% → 22.6% (standing with head out of frame now holds, as intended).
+- **Seated takes 01/03/04:** held 2.5% / 0.0% / 0.7%, so the cost of the gate when seated is small.
+- **Operating rule:** keep your face in the camera view while controlling the arm.
+- **Also:**
+  - a warning when the robot camera gives no frames;
+  - the camera is not released mid-read;
+  - no exit hang on a dead GPU worker.
+- 296 tests passing.
