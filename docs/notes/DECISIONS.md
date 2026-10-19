@@ -197,6 +197,21 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
   - Find-and-grab with OWLv2 + visual servoing was considered and deferred.
 - **Outcome:** —
 
+### D-X · 2026-10-19 · Startup autonomy route: fine-tune SmolVLA on our own wrist-camera pick demos (Tray: "take the best route")
+- **Research:**
+  - Public SO-101 ball/cube policies exist (Chibaa/0730_smol, taeyoungss/SmolVla_pick_the_ball, ACT pick-cube). They are trained on other people's cameras, rooms and calibrations; none reports a success rate. They are not expected to transfer as-is.
+  - Community fine-tunes of `lerobot/smolvla_base` use 40–150 demos and 10k–20k steps (about 10–16 GB VRAM at batch 8).
+- **Choice:** `lerobot/smolvla_base` fine-tuned on 40–50 Takeworthy pick demos.
+  - Input: wrist camera (robot.mp4) + follower joint state. Output: the sent joint command.
+  - The OBSBOT view is excluded: it shows the human, who is absent at run time.
+- **Why this is the startup route:** it is the product loop (webcam demos → dataset → autonomous policy), and it uses the LeRobot standard buyers expect.
+- **Data fix (before the pick recordings):** the recorder now saves `q_sent`, the command actually sent each frame (the policy's action). Earlier takes lack it.
+- **Plan:**
+  - Tonight (after the class video): validate 1 pick take, then record 40–50 with the ball moved each time (teacher controller).
+  - After Oct 24: convert to a LeRobot dataset, fine-tune, evaluate the autonomous pick success rate.
+- Find-and-grab (OWLv2 / Grounding DINO + visual servoing) stays a fallback. YOLO-World is GPL-3.0, which is a licence risk for a product.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)

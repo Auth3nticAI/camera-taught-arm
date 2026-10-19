@@ -587,7 +587,8 @@ def main(argv: list[str] | None = None) -> int:
                         pose_presence=None if pose_obs is None else pose_obs.presence,
                         depth_hand=getattr(pipe, "depth_hand", None),
                         depth_shoulder=getattr(pipe, "depth_shoulder", None),
-                        locked_side=getattr(pipe, "locked_side", None))
+                        locked_side=getattr(pipe, "locked_side", None),
+                        q_sent=prev if follower is not None else None)
             if bus_err is None:
                 consec_fail = 0
             else:

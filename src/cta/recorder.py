@@ -16,6 +16,9 @@ Per-row codes:
   depth_hand, depth_shoulder (float32, metres): --control reach, the palm-centre depth this frame and the
     shoulder depth used (Depth Anything V2), NaN when absent / no depth model. locked_side (int8): the arm
     locked at calibration, 0 = left, 1 = right, -1 = none. Sessions before 2026-10-18 lack these keys.
+  q_sent (6,): the command actually sent to the follower this frame (after speed limit / lead bound / table
+    guard; sim radians) - the "action" for policy training (SmolVLA/ACT, D-X); NaN without a robot.
+    Sessions before 2026-10-19 lack it.
 """
 from __future__ import annotations
 
@@ -62,7 +65,7 @@ def _vec(q: np.ndarray | None) -> np.ndarray:
 
 class SessionRecorder:
     _SHAPES = {"t": (), "hand_present": (), "lm_img": (21, 3), "lm_world": (21, 3), "feats": (6,),
-               "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,), "status": (), "smoother_on": (),
+               "q_baseline": (6,), "q_leader": (6,), "q_follower": (6,), "q_sent": (6,), "status": (), "smoother_on": (),
                "pose_img": (33, 3), "pose_world": (33, 3), "pose_vis": (33,), "pose_presence": (33,),
                "depth_hand": (), "depth_shoulder": (), "locked_side": (),
                "robot_cam_ok": (), "robot_frame_t": ()}
@@ -106,7 +109,7 @@ class SessionRecorder:
             pose_vis: np.ndarray | None = None, pose_presence: np.ndarray | None = None,
             depth_hand: float | None = None, depth_shoulder: float | None = None,
             locked_side: str | None = None, robot_rgb: np.ndarray | None = None,
-            robot_t: float | None = None) -> None:
+            robot_t: float | None = None, q_sent: np.ndarray | None = None) -> None:
         if self._closed:
             raise RuntimeError("recorder is closed")
         if self.n == self._cap:
@@ -123,6 +126,7 @@ class SessionRecorder:
         b["q_baseline"][i] = _vec(q_baseline)
         b["q_leader"][i] = _vec(q_leader)
         b["q_follower"][i] = _vec(q_follower)
+        b["q_sent"][i] = _vec(q_sent)
         b["status"][i] = status
         b["smoother_on"][i] = smoother_on
         b["pose_img"][i] = np.nan if pose_img is None else pose_img

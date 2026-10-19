@@ -181,3 +181,12 @@ def test_no_robot_video_by_default(tmp_path):
         _add(r)
     assert not (tmp_path / "s" / "robot.mp4").exists()
     assert load_session(tmp_path / "s")["robot_cam_ok"].tolist() == [False]
+
+
+def test_sent_command_is_recorded_for_policy_training(tmp_path):
+    """D-X: the command actually sent to the follower is the 'action' a SmolVLA/ACT policy learns."""
+    with SessionRecorder(tmp_path, "s", {"mode": "free"}, video_size=SIZE) as r:
+        r.add(0.0, _obs(), _feats(), np.zeros(6), None, np.full(6, 0.2), _rgb(), q_sent=np.full(6, 0.3))
+        r.add(1 / 60, _obs(), _feats(), np.zeros(6), None, None, _rgb())
+    d = load_session(tmp_path / "s")
+    assert np.allclose(d["q_sent"][0], 0.3) and np.isnan(d["q_sent"][1]).all()
