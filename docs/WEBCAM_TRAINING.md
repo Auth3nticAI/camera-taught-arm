@@ -9,15 +9,15 @@ Milestone plan: [October 18-24](superpowers/plans/2026-10-18-webcam-learning.md)
 In the repository terminal, close other apps that hold the camera, and run:
 
 ```powershell
-uv run cta-mirror --robot none --control reach --mirrored --hand left --record reach_train
+uv run cta-mirror --robot none --control reach --hand left --record reach_train
 ```
 
-This records real webcam motion with the simulator teacher; physical-arm movement is not needed to train the first network. `--mirrored --hand left` matches the previously documented OBSBOT setup; change those only if your camera/hand setup changed.
+This records real webcam motion with the simulator teacher; physical-arm movement is not needed to train the first network. `--hand left` matches Tray's setup. **Do not pass `--mirrored`:** the OBSBOT image is NOT mirrored (verified 2026-10-18: the "EMERGE" chair text reads normally). The flag swaps left/right.
 
 For actual follower demonstrations, use your already validated hardware setup:
 
 ```powershell
-uv run cta-mirror --robot so101 --follower-port COM4 --control reach --mirrored --hand left --record reach_train
+uv run cta-mirror --robot so101 --follower-port COM4 --control reach --hand left --record reach_train
 ```
 
 COM4 is the previously logged follower port; use the current correct port if it changed. Keep the normal alignment and control guards enabled.
@@ -76,7 +76,7 @@ Only then add an explicit learned mode to the simulator, benchmark laptop latenc
 A readable take is not necessarily a good demonstration. The first two recorded takes contain pose glitches; keep them as diagnostic evidence and record clean takes after validating control. Close/restart the mirror app to load the tracking fix. First test without recording:
 
 ```powershell
-uv run cta-mirror --robot none --control reach --mirrored --hand left
+uv run cta-mirror --robot none --control reach --hand left
 ```
 
 Keep both shoulders, the tracked elbow and the hand visible; sitting farther back avoids cropped-body hallucinations. Press C at your comfortable home pose, then P for pinch. Reach mode uses shoulders and arm pose, so a hand-only closeup cannot reliably drive it. The new checks hold the command on arm identity switches or implausible shoulder/reach jumps and print TRACKING HOLD with the reason. Return to the previous view, or reframe and press C. The tolerances are initial conservative heuristics and need live validation. Resume data collection only after the movement matches your intent.

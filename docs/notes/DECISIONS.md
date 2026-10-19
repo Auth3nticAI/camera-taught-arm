@@ -139,6 +139,18 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
   - final per-frame target max: 1.25 cm.
 - **Outcome:** —
 
+### D-T · 2026-10-18 · Correction: the OBSBOT image is NOT mirrored (drop `--mirrored`)
+- **Evidence:**
+  - In recorded frames the chair text "EMERGE ▷" reads normally; mirrored video would reverse it.
+  - Tray's raised **left** arm appears on the image's right, which is how an un-mirrored camera shows it.
+  - In the recordings the tracked hand sits on MediaPipe's "left" wrist, at image u ≈ 0.55–0.61.
+- **Impact:**
+  - `--mirrored` (used since 2026-10-17) **swapped left/right** in arm mode and reach mode, and made the lock print "right" for Tray's left arm. This is the likely main cause of "not super accurate".
+  - The old hand mode's directions were verified with un-mirrored semantics, so it was unaffected.
+- **Fix:** run **without `--mirrored`**: `cta-mirror ... --hand left` (docs updated).
+- **Data note:** reach takes `reach_train_01..04` were recorded with `mirrored: true`, so their `q_baseline` lateral labels are inverted. Their raw hand, pose, depth and video data are fine. Re-derive the labels by replaying with `mirrored=False` before any training.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)
