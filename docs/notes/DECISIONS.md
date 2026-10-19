@@ -180,7 +180,7 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
   - MAE joints 1–5 is 17.7°;
   - network latency is 4.9 ms per frame on the RTX 4070 Ti.
 - **Rollout:** sim first (`--robot none`), then the real arm at `--max-speed-dps 60`.
-- **Outcome:** —
+- **Outcome:** live sim test at 0.2 Hz / beta 0.05: Tray reports "good to go" (2026-10-19). Next: real arm at 60 deg/s, then the demo video.
 
 ---
 
