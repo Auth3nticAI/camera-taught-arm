@@ -20,7 +20,7 @@ from cta.reach import (ARM_PER_SHOULDER, REACH_FRACTION, WindowMedian, fwd_from_
                        palm_centre, plane_reach, reach_target, shoulder_sep)
 
 D = np.radians
-MOVED = "arm/body moved - press c to re-lock"
+GLITCH = "shoulder jump rejected (glitch)"
 ASPECT = 16 / 9
 
 
@@ -220,25 +220,45 @@ def test_shoulder_sanity_checks_still_hold(kin, gains):
     bad = pose()
     bad.img[[11, 12], 1] += 0.4
     q2, _ = p.step(hand(po), 0.08, bad, depth(po))
-    assert np.array_equal(q0, q2) and p.tracking_hold_reason == MOVED
+    assert np.array_equal(q0, q2) and p.tracking_hold_reason == GLITCH
     _, s = p.step(hand(po), 0.12, po, depth(po))
     assert s == "TRACKING" and p.tracking_hold_reason is None  # no multi-frame reacquisition hold
 
 
-def test_body_moved_during_a_gap_holds_until_relock(kin, gains, capsys):
-    """Teleport allowance is capped (dt <= 0.1 s): a body that moved far while the hand was away holds
-    (with a 're-lock' message) until 'c'."""
+def test_real_body_move_is_accepted_after_consistent_frames(kin, gains):
+    """Tray's rule (2026-10-18): a one-frame shoulder jump is a glitch - reject it and hold the last good
+    command; a NEW position that stays consistent for SHOULDER_CONFIRM_FRAMES is a real move - accept it as
+    the new baseline automatically (no 'c', no long pause)."""
+    from cta.pipeline import SHOULDER_CONFIRM_FRAMES
     p = calibrated(kin, gains)
     po = pose()
     p.step(hand(po), 0.0, po, depth(po))
-    p.step(None, 1.0, po)
     moved = pose()
     moved.img[:, 0] += 0.25  # the whole body 0.25 image widths to the side
-    for t in (3.0, 3.1, 5.0):
+    t = 0.04
+    for i in range(SHOULDER_CONFIRM_FRAMES - 1):  # still confirming: held
         _, s = p.step(hand(moved, side="left"), t, moved, depth(moved))
-        assert s != "TRACKING" and p.tracking_hold_reason == MOVED
-    p.calibrate(hand(moved), moved)
-    assert p.step(hand(moved), 5.1, moved, depth(moved))[1] == "TRACKING"
+        assert s != "TRACKING" and p.tracking_hold_reason == GLITCH
+        t += 0.04
+    _, s = p.step(hand(moved, side="left"), t, moved, depth(moved))
+    assert s == "TRACKING" and p.locked_side == "left"  # accepted, no re-lock needed
+
+
+def test_flickering_shoulder_is_never_accepted(kin, gains):
+    p = calibrated(kin, gains)
+    po = pose()
+    q0, _ = p.step(hand(po), 0.0, po, depth(po))
+    a, b = pose(), pose()
+    a.img[[11, 12], 0] += 0.25
+    b.img[[11, 12], 0] -= 0.25
+    t = 0.04
+    for i in range(20):  # two glitch positions alternating: never consistent, never accepted
+        bad = a if i % 2 == 0 else b
+        q, s = p.step(hand(po), t, bad, depth(po))
+        assert s != "TRACKING" and np.array_equal(q, q0)
+        t += 0.04
+    _, s = p.step(hand(po), t, po, depth(po))
+    assert s == "TRACKING"  # the next valid frame near the last good position resumes immediately
 
 
 def test_pose_wrist_teleport_does_not_move_the_target(kin, gains):

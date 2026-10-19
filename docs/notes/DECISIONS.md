@@ -127,6 +127,18 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Verified:** tests check the robot's actual upper-arm and forearm directions, from the MuJoCo model, against Tray's arm reflected vertically, within 1°.
 - **Outcome:** —
 
+### D-S · 2026-10-18 · Shoulder glitch handling (Tray's engineering call)
+- **Options:** stop and press `c` · pause briefly, then continue · **Tray's own design: per-frame spatial threshold**
+- **Choice:**
+  - A shoulder jump beyond the allowed per-frame motion is **rejected for that frame**. The arm holds its last good command and resumes on the next valid frame.
+  - Claude's addition: a new position that stays consistent for **5 frames (~0.2 s)** is a real body move and becomes the new baseline automatically, with no `c` needed. This is safe because reach is measured hand-relative-to-shoulder.
+- **Why:** you get the safety of rejecting glitches without the pauses. The old "press c" hold also froze forever after a real body shift.
+- **Result (replay, take 02):**
+  - held while visible: 18.2% → **8.1%** (original code: 26.7%);
+  - 0 arm switches;
+  - final per-frame target max: 1.25 cm.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)

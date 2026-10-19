@@ -43,7 +43,13 @@ D_MIN_M, D_MAX_M = -1.0, 0.3  # reach: plausible hand - shoulder depth (hand <= 
                               # outside = the patch missed the hand (take 04 frame 13: +0.78 m) -> rejected
 SH_DEPTH_MAX_AGE_S = 1.0  # reach: shoulder depth older than this (hand covering it) -> forward held
 TELEPORT_DT_CAP_S = 0.1   # reach: shoulder-teleport allowance 0.08 + 0.8 * min(dt, this)
-MOVED_REASON = "arm/body moved - press c to re-lock"
+GLITCH_REASON = "shoulder jump rejected (glitch)"
+# Tray's rule (2026-10-18): reject a one-frame shoulder jump (hold the last good command, resume on the
+# next valid frame); a new position that stays consistent for this many frames is a real body move and
+# becomes the new baseline automatically. Safe: reach is measured hand-relative-to-shoulder, so a body
+# shift with the hand still relative to it doesn't move the target.
+SHOULDER_CONFIRM_FRAMES = 5
+SHOULDER_CONSISTENT_TOL = 0.04  # image units: frames within this of each other count as "consistent"
 DEPTH_MEDIAN_FRAMES = 3  # reach: median over the last N hand-shoulder depth differences (measurement denoise)
 HAND_POINT = "wrist"     # reach: hand tracker point for "where" ("wrist" = lm 0, "palm" = mean of 0,5,9,13,17)
 CLEARANCE_DIRS = 500   # extreme-vertex directions: lowest_z ~0.1 ms; <= ~0.8 mm optimistic (reviewer
@@ -546,6 +552,8 @@ class ReachPipeline(_BodyPipeline):
         self._shoulder_span: float | None = None
         self._prev_shoulders: np.ndarray | None = None
         self._prev_shoulders_t: float | None = None
+        self._cand_shoulders: np.ndarray | None = None  # candidate new baseline after a jump
+        self._cand_count = 0
 
     def calibrate(self, obs: HandObservation, pose_obs=None) -> None:
         """'c': hand calibration + lock the arm (now if the body is visible, else on the next frame with
@@ -590,9 +598,9 @@ class ReachPipeline(_BodyPipeline):
 
     def _shoulder_glitch(self, pose_obs, t: float) -> str | None:
         """Confidence alone can't catch confident hallucinations (visibility reads ~1.0 throughout the
-        recordings). Shoulders out of view, a collapsed/changed span or a teleport -> hold. The teleport
-        allowance is 0.08 + 0.8 * min(dt, 0.1 s) from the last good shoulders: a body that moved far while
-        unseen holds until it comes back or 'c' re-locks."""
+        recordings). Shoulders out of view or a collapsed/changed span -> hold. A jump beyond
+        0.08 + 0.8 * min(dt, 0.1 s) from the last good shoulders is rejected as a glitch for that frame; a new
+        position consistent for SHOULDER_CONFIRM_FRAMES frames is accepted as a real move."""
         shoulders = np.asarray(pose_obs.img[[11, 12], :2], dtype=float)
         span = float(np.linalg.norm(shoulders[0] - shoulders[1]))
         if np.any(shoulders < 0.02) or np.any(shoulders > 0.98):
@@ -603,7 +611,17 @@ class ReachPipeline(_BodyPipeline):
         if self._prev_shoulders is not None:
             dt = min(max(0.0, t - self._prev_shoulders_t), TELEPORT_DT_CAP_S)
             if np.linalg.norm(shoulders - self._prev_shoulders, axis=1).max() > 0.08 + 0.8 * dt:
-                return MOVED_REASON  # teleport, or the body moved while unseen: held until it returns / 'c'
+                # jump: a glitch unless the new position holds steady for SHOULDER_CONFIRM_FRAMES
+                if (self._cand_shoulders is not None and
+                        np.linalg.norm(shoulders - self._cand_shoulders, axis=1).max() <= SHOULDER_CONSISTENT_TOL):
+                    self._cand_count += 1
+                else:
+                    self._cand_count = 1
+                self._cand_shoulders = shoulders
+                if self._cand_count < SHOULDER_CONFIRM_FRAMES:
+                    return GLITCH_REASON  # reject this frame, hold the last good command
+                # consistent long enough: a real move -> new baseline (falls through to accept)
+        self._cand_shoulders, self._cand_count = None, 0
         self._prev_shoulders, self._prev_shoulders_t = shoulders, t
         return None
 
