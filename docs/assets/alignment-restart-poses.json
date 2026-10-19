@@ -1,0 +1,146 @@
+[
+  {
+    "capture": 1,
+    "sim_degrees": [
+      0.0,
+      7.0,
+      32.0,
+      83.827,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": -1e-05
+  },
+  {
+    "capture": 2,
+    "sim_degrees": [
+      0.0,
+      -65.0,
+      80.0,
+      58.264,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": 1e-05
+  },
+  {
+    "capture": 3,
+    "sim_degrees": [
+      0.0,
+      -65.0,
+      88.0,
+      32.944,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": 0.0
+  },
+  {
+    "capture": 4,
+    "sim_degrees": [
+      0.0,
+      -41.0,
+      88.0,
+      -1.284,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": -1e-05
+  },
+  {
+    "capture": 5,
+    "sim_degrees": [
+      0.0,
+      23.0,
+      0.0,
+      82.216,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": 0.0
+  },
+  {
+    "capture": 6,
+    "sim_degrees": [
+      0.0,
+      23.0,
+      88.0,
+      -85.166,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": 1e-05
+  },
+  {
+    "capture": 7,
+    "sim_degrees": [
+      0.0,
+      -9.0,
+      88.0,
+      -45.016,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": -1e-05
+  },
+  {
+    "capture": 8,
+    "sim_degrees": [
+      0.0,
+      31.0,
+      40.0,
+      -48.621,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": -4e-05
+  },
+  {
+    "capture": 9,
+    "sim_degrees": [
+      0.0,
+      23.0,
+      8.0,
+      26.826,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": -1e-05
+  },
+  {
+    "capture": 10,
+    "sim_degrees": [
+      0.0,
+      47.0,
+      -40.0,
+      69.847,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": -0.0
+  },
+  {
+    "capture": 11,
+    "sim_degrees": [
+      0.0,
+      55.0,
+      -40.0,
+      32.665,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": 1e-05
+  },
+  {
+    "capture": 12,
+    "sim_degrees": [
+      0.0,
+      55.0,
+      -16.0,
+      -14.813,
+      0.0,
+      0.0
+    ],
+    "contact_residual_mm": -3e-05
+  }
+]

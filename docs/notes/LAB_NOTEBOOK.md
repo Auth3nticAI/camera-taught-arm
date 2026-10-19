@@ -202,3 +202,27 @@ Final wrist-recovery verification: 238 tests passed in 45.34 seconds. git diff -
 - **Claim for the slides:** the network imitates the webcam controller from video (imitation error vs the classical teacher), not physical accuracy.
 - **Next:** more takes (variety), plus a regularization/augmentation experiment chosen on validation, with the test take kept untouched.
 - **Outputs:** `cta-data/learning/reach_head_v1/` (`best.pt`, `history.csv`, `metrics.json`).
+
+## 2026-10-19 · Dataset v2 + regularization experiment (ch. 12)
+- **Data v2:** 12 takes (`train2_01..12`), one app session with one 'c' lock, 2,159 frames at stride 6 (v1 had 977). Audit: 0 rejected. The old `train_01..05` were moved to `sessions_v1/` because their home pose differs.
+- **Split by take (seed 42):** train = 10 takes (1,686 frames), val = train2_08 (214), test = train2_01 (259).
+- **Model A** uses the v1 design: 384→128→6, AdamW wd 0.01.
+- **Model B** is regularized: dropout 0.3, wd 0.05, Gaussian feature noise 0.1×std, and 4 augmented copies per train frame (+6,744 features from scale/shift/±5° rotation/brightness/contrast; no flips).
+
+| | best val MSE (rad²) | final train MSE | test MAE | pan | lift | elbow | wflex | roll | grip |
+|---|---|---|---|---|---|---|---|---|---|
+| mean-pose baseline | | | 31.2° | | | | | | |
+| A: v1 design | 0.321 | 0.0067 | **21.3°** | 10.2 | 24.3 | 19.9 | 17.6 | 28.7 | 27.1 |
+| B: regularized | **0.283** | 0.089 | 22.1° | 8.8 | 23.1 | 22.6 | 15.2 | 33.0 | 30.0 |
+
+- **Selection on validation picks B** (12% lower val MSE). On the test take B is 0.8° worse, which is within the noise of a single held-out take.
+- Both models are about 30% better than the baseline (v1 was 27%).
+- **What regularization did:**
+  - The train/val gap fell from about 55× to about 3.4×, so B memorizes far less.
+  - Val loss was flat after about epoch 5 for both models, so regularization did not unlock better generalization.
+- **Diagnosis:**
+  - The bottleneck is the input, not the head. The frozen DINOv2 CLS sees the whole 224×224 frame, where the hand covers only a few patches.
+  - wrist_roll and gripper, which depend on hand detail, are close to the baseline.
+  - Arm-scale joints (pan, wrist_flex) improved.
+- **Caveat:** val and test are one take each, so per-take variance dominates the gap between A and B. Leave-one-take-out cross-validation would give a firmer answer.
+- **Figures:** `docs/figures/learning_curves.png`, `docs/figures/per_joint_mae.png`. Runs are in `cta-data/learning/head_v2_base/` and `cta-data/learning/head_v2_reg/`.

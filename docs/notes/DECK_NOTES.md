@@ -31,6 +31,14 @@ Running talking points for two decks. Add as you go; trim at the end.
 
 **Results slots:** per-joint error (°), latency (ms), FPS, jitter/lag vs. One Euro, pick success % per color.
 
+**Results slide: the network (2026-10-19, dataset v2, 12 takes):**
+- Frozen DINOv2 + custom PyTorch head, trained on Tray's own webcam takes. Test error is **21.3°**, against **31.2°** for the predict-the-mean baseline (about 30% lower).
+- The ch. 12 experiment, shown as `docs/figures/learning_curves.png`:
+  - Dropout, weight decay, noise and augmentation cut the train/val gap from 55× to 3.4×.
+  - The model chosen on validation (B) ties the baseline design on the test take.
+- **Lesson to say out loud:** "Regularization stopped the memorizing, but the error didn't drop. The bottleneck is what the network sees, not how it is trained. The hand is a few pixels in a whole-body frame, so wrist roll and gripper stay hard." That points straight to the next step: a hand-crop input.
+- Per-joint chart: `docs/figures/per_joint_mae.png`.
+
 ---
 
 ## Client / investor deck (audience: robotics teams, investors · goal: start the company)
