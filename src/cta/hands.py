@@ -39,8 +39,12 @@ MAX_WRIST_JUMP = 0.15  # normalized image units: farther than this from the last
 LOST_FRAMES = 15        # after this many frames without the hand, re-acquire by handedness label
 
 
+ACQUIRE_RADIUS = 0.15  # image units: a new hand is acquired only this close to the wanted arm's Pose wrist
+
+
 def choose_hand(handedness_labels: list[str], scores: list[float], wrists: list[tuple[float, float]],
-                want: str, mirrored_input: bool, last_wrist: tuple[float, float] | None) -> int | None:
+                want: str, mirrored_input: bool, last_wrist: tuple[float, float] | None,
+                anchor_uv: tuple[float, float] | None = None) -> int | None:
     """Keep following the SAME hand by wrist position; MediaPipe's left/right label flickers frame to
     frame on small or occluded hands (seen live 2026-10-17: TRACKING/NO HAND every other frame).
     The label is only used to acquire the hand when there is no recent position."""
@@ -49,7 +53,13 @@ def choose_hand(handedness_labels: list[str], scores: list[float], wrists: list[
         i = int(np.argmin(d))
         if d[i] <= MAX_WRIST_JUMP:
             return i
-        return None  # let the track expire before label-based acquisition of a distant hand
+        return None  # let the track expire before acquiring a distant hand
+    if anchor_uv is not None:
+        # Acquire by position next to the wanted arm's Pose wrist. MediaPipe's handedness label disagreed
+        # with reality on Tray's un-mirrored camera (2026-10-18), so it is not trusted when Pose is available.
+        d = [np.hypot(w[0] - anchor_uv[0], w[1] - anchor_uv[1]) for w in wrists]
+        i = int(np.argmin(d))
+        return i if d[i] <= ACQUIRE_RADIUS else None
     return select_hand(handedness_labels, scores, want, mirrored_input)
 
 
@@ -68,7 +78,8 @@ class HandTracker:
         )
         self._lm = vision.HandLandmarker.create_from_options(opts)
 
-    def detect(self, rgb: np.ndarray, t: float) -> HandObservation | None:
+    def detect(self, rgb: np.ndarray, t: float, anchor_uv: tuple[float, float] | None = None) -> HandObservation | None:
+        """anchor_uv: the wanted arm's Pose wrist (image) when available - new hands are acquired next to it."""
         h, w = rgb.shape[:2]
         if w > self.infer_width:
             rgb = cv2.resize(rgb, (self.infer_width, round(h * self.infer_width / w)), interpolation=cv2.INTER_AREA)
@@ -83,7 +94,7 @@ class HandTracker:
         labels = [c[0].category_name for c in res.handedness]
         scores = [c[0].score for c in res.handedness]
         wrists = [(h[0].x, h[0].y) for h in res.hand_landmarks]
-        i = choose_hand(labels, scores, wrists, self.want, self.mirrored_input, self._last_wrist)
+        i = choose_hand(labels, scores, wrists, self.want, self.mirrored_input, self._last_wrist, anchor_uv)
         if i is None:
             return self._miss()
         self._last_wrist, self._missed = wrists[i], 0

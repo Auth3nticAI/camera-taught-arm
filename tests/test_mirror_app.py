@@ -42,7 +42,7 @@ class FakeTracker:
     def __init__(self, *a, **k):
         pass
 
-    def detect(self, rgb, t):
+    def detect(self, rgb, t, anchor_uv=None):
         return FakeTracker.obs
 
     def close(self):

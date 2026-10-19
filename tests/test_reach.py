@@ -177,19 +177,19 @@ def test_calibration_locks_the_arm_and_it_never_switches(kin, gains):
         assert p.locked_side == "left" and s == "TRACKING"
     # the hand is measured against the LOCKED (left) shoulder: it is now ~a shoulder width to the right
     assert p.last_n[1] < -0.3
-    p.calibrate(hand(other, side="right"), other)  # only a new 'c' re-picks
-    assert p.locked_side == "right"
+    p.calibrate(hand(other, side="right"), other)  # a new 'c' with the OTHER arm's hand never locks it
+    assert p.locked_side is None  # only the configured --hand arm (left) may lock
 
 
 @pytest.mark.parametrize("mirrored", [False, True])
 def test_lock_uses_unmirroring(kin, gains, mirrored):
     po = pose(side="right", mirrored=mirrored)
-    p = calibrated(kin, gains, po=po, mirrored=mirrored)
+    p = calibrated(kin, gains, po=po, mirrored=mirrored, want="right")  # --hand right
     assert p.locked_side == "right"
 
 
 def test_lock_waits_for_pose_when_c_has_no_body(kin, gains):
-    p = ReachPipeline(kin, None, gains, None)
+    p = ReachPipeline(kin, None, gains, None, want="right")
     p.calibrate(hand(), None)
     assert p.locked_side is None
     po = pose(side="right")
@@ -659,3 +659,17 @@ def test_low_visibility_face_holds(kin, gains):
     dim = pose()
     dim.vis[[0, 2, 5]] = 0.1
     assert p.step(hand(po), 0.04, dim, depth(po))[1] != "TRACKING"
+
+
+def test_lock_only_the_configured_arm(kin, gains):
+    """Tray (2026-10-18): it locked his RIGHT arm when he raised his right hand. Only the --hand arm may lock;
+    a hand on the other arm waits (holds) with a message."""
+    from cta.pipeline import WRONG_HAND_REASON
+    p = ReachPipeline(kin, None, gains, None, want="left", hand_point="wrist")
+    other = pose(side="right")
+    p.calibrate(hand(other, side="right"), other)
+    _, s = p.step(hand(other, side="right"), 0.0, other, depth(other, "right"))
+    assert p.locked_side is None and s != "TRACKING" and p.tracking_hold_reason == WRONG_HAND_REASON
+    po = pose(side="left")
+    p.step(hand(po), 0.1, po, depth(po))
+    assert p.locked_side == "left"

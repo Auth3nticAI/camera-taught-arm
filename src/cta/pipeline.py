@@ -53,6 +53,10 @@ SHOULDER_CONFIRM_FRAMES = 5
 # "shoulders" on his torso/forearm that held steady for 5 frames. Shoulders only count when the FACE (nose +
 # both eyes) is in view, visible, and above them; otherwise hold (applies to every frame, not just jumps).
 FACE_IDX = (0, 2, 5)  # nose, left eye, right eye
+# 2026-10-18: it locked Tray's RIGHT arm when he raised his right hand. Only the configured --hand arm may
+# lock: the tracked hand must sit on that arm's Pose wrist (Pose labels are anatomical and verified correct).
+LOCK_RADIUS = 0.15  # image units, hand wrist <-> wanted arm's Pose wrist
+WRONG_HAND_REASON = "show your configured control hand (the visible hand is not on that arm)"
 FACE_REASON = "face not in view above the shoulders (shoulders not trusted)"
 SHOULDER_CONSISTENT_TOL = 0.04  # image units: frames within this of each other count as "consistent"
 DEPTH_MEDIAN_FRAMES = 3  # reach: median over the last N hand-shoulder depth differences (measurement denoise)
@@ -579,7 +583,12 @@ class ReachPipeline(_BodyPipeline):
         conf = np.minimum(np.asarray(pose_obs.vis, float), np.asarray(pose_obs.presence, float))
         if not np.all(conf[idx] >= self.pose_min_vis):
             return
-        self.locked_side = choose_arm_side(pose_obs.img, obs.lm_img[0, :2], None, self.want, self.mirrored)
+        wr = side_indices(self.want, self.mirrored)[2]
+        if np.hypot(*(np.asarray(pose_obs.img)[wr, :2] - obs.lm_img[0, :2])) > LOCK_RADIUS:
+            self._lock_refused = True  # the visible hand belongs to the other arm: never lock it
+            return
+        self._lock_refused = False
+        self.locked_side = self.want
         self.side = self.locked_side
         print(f"arm locked: {self.locked_side} (press c to re-lock)")
 
@@ -711,7 +720,7 @@ class ReachPipeline(_BodyPipeline):
             return self._hold("no body (shoulders) in view", t)
         self._try_lock(obs, pose_obs)
         if self.locked_side is None:
-            return self._hold("arm not locked yet", t)
+            return self._hold(WRONG_HAND_REASON if getattr(self, "_lock_refused", False) else "arm not locked yet", t)
         conf = np.minimum(np.asarray(pose_obs.vis, float), np.asarray(pose_obs.presence, float))
         sh_i = side_indices(self.locked_side, self.mirrored)[0]
         if not np.all(conf[[11, 12]] >= self.pose_min_vis):  # locked shoulder (and the scale's other one)

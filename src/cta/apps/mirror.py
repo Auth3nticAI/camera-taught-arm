@@ -414,8 +414,14 @@ def main(argv: list[str] | None = None) -> int:
             depth_job = None
             if depth_est is not None and n_frames % args.depth_every == 0:
                 depth_job = depth_pool.submit(depth_est.predict, small)
-            obs = tracker.detect(small, t_frame)
             pose_obs = pose_tracker.detect(small, t_frame) if pose_tracker is not None else None
+            anchor = None  # the configured arm's Pose wrist: new hands are acquired next to it (not by label)
+            if pose_obs is not None:
+                wr = side_indices(args.hand, args.mirrored)[2]
+                v = min(float(pose_obs.vis[wr]), float(pose_obs.presence[wr]))
+                if v >= args.pose_min_vis and np.all(np.isfinite(pose_obs.img[wr, :2])):
+                    anchor = (float(pose_obs.img[wr, 0]), float(pose_obs.img[wr, 1]))
+            obs = tracker.detect(small, t_frame, anchor) if anchor is not None else tracker.detect(small, t_frame)
             depth_map = None
             if depth_job is not None:
                 try:
