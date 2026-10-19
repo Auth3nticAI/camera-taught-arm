@@ -33,14 +33,31 @@ def prepare_image(rgb: np.ndarray) -> np.ndarray:
     return image
 
 
+def augment_image(img: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Ch. 12 augmentation for a letterboxed 224x224 frame: small scale/shift/rotation + brightness/contrast.
+    NEVER a horizontal flip - that would swap the user's left/right and corrupt the joint targets."""
+    h, w = img.shape[:2]
+    scale = rng.uniform(0.9, 1.1)
+    angle = rng.uniform(-5.0, 5.0)
+    tx, ty = rng.uniform(-0.05, 0.05) * w, rng.uniform(-0.05, 0.05) * h
+    m = cv2.getRotationMatrix2D((w / 2, h / 2), angle, scale)
+    m[:, 2] += (tx, ty)
+    out = cv2.warpAffine(img, m, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    contrast, brightness = rng.uniform(0.8, 1.2), rng.uniform(-20, 20)
+    return np.clip(out.astype(np.float32) * contrast + brightness, 0, 255).astype(np.uint8)
+
+
 class JointHead(nn.Module):
     """Custom trainable head; outputs six simulation-space joint targets in radians."""
 
-    def __init__(self, input_dim: int):
+    def __init__(self, input_dim: int, hidden: int = 128, dropout: float = 0.0):
         super().__init__()
         self.register_buffer('feature_mean', torch.zeros(input_dim))
         self.register_buffer('feature_std', torch.ones(input_dim))
-        self.net = nn.Sequential(nn.Linear(input_dim, 128), nn.GELU(), nn.Linear(128, 6))
+        layers = [nn.Linear(input_dim, hidden), nn.GELU()]
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        self.net = nn.Sequential(*layers, nn.Linear(hidden, 6))
 
     def forward(self, features):
         return self.net((features - self.feature_mean) / self.feature_std)
@@ -48,13 +65,17 @@ class JointHead(nn.Module):
 
 def load_head(path: Path) -> JointHead:
     checkpoint = torch.load(path, map_location='cpu', weights_only=True)
-    model = JointHead(checkpoint['input_dim'])
+    model = JointHead(checkpoint['input_dim'], checkpoint.get('hidden', 128), checkpoint.get('dropout', 0.0))
     model.load_state_dict(checkpoint['state_dict'])
     return model.eval()
 
 
-def train_head(takes: dict, output: Path, epochs: int = 100, seed: int = 42) -> dict:
-    """Train on cached frozen features, select on validation, evaluate test once."""
+def train_head(takes: dict, output: Path, epochs: int = 100, seed: int = 42, dropout: float = 0.0,
+               weight_decay: float = 0.01, feature_noise: float = 0.0, use_aug: bool = False,
+               hidden: int = 128) -> dict:
+    """Train on cached frozen features, select on validation, evaluate test once.
+    Regularization (ch. 12): dropout, AdamW weight decay, Gaussian noise on standardized features, and
+    augmented-image feature copies ('features_aug', TRAIN takes only - never val/test)."""
     if epochs < 1:
         raise ValueError('epochs must be positive')
     split = split_takes(list(takes), seed)
@@ -77,11 +98,23 @@ def train_head(takes: dict, output: Path, epochs: int = 100, seed: int = 42) -> 
         arrays[part] = tuple(torch.from_numpy(np.concatenate([takes[n][key] for n in names])).float()
                              for key in ('features', 'targets'))
     x_train, y_train = arrays['train']
-    model = JointHead(dim)
-    model.feature_mean.copy_(x_train.mean(0))
+    model = JointHead(dim, hidden, dropout)
+    model.feature_mean.copy_(x_train.mean(0))  # normalization from ORIGINAL train frames only
     model.feature_std.copy_(x_train.std(0, unbiased=False).clamp_min(1e-6))
     mean_target = y_train.mean(0)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    n_aug = 0
+    if use_aug:
+        missing = [n for n in split['train'] if 'features_aug' not in takes[n]]
+        if missing:
+            raise ValueError(f'use_aug needs features_aug in the cache (extract --augment N): {missing}')
+        xa = np.concatenate([takes[n]['features_aug'].reshape(-1, dim) for n in split['train']])
+        ya = np.concatenate([np.repeat(takes[n]['targets'], takes[n]['features_aug'].shape[1], axis=0)
+                             for n in split['train']])
+        n_aug = len(xa)
+        x_train = torch.cat([x_train, torch.from_numpy(xa).float()])
+        y_train = torch.cat([y_train, torch.from_numpy(ya).float()])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=weight_decay)
+    noise_std = model.feature_std * feature_noise
     loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x_train, y_train),
                                          batch_size=128, shuffle=True, num_workers=0)
     best, history = float('inf'), []
@@ -90,6 +123,8 @@ def train_head(takes: dict, output: Path, epochs: int = 100, seed: int = 42) -> 
         loss_sum = 0.0
         for x, y in loader:
             optimizer.zero_grad(set_to_none=True)
+            if feature_noise > 0:
+                x = x + torch.randn_like(x) * noise_std
             loss = nn.functional.mse_loss(model(x), y)
             loss.backward()
             optimizer.step()
@@ -101,6 +136,7 @@ def train_head(takes: dict, output: Path, epochs: int = 100, seed: int = 42) -> 
         if val < best:
             best = val
             torch.save({'state_dict': model.state_dict(), 'input_dim': dim, 'seed': seed,
+                        'hidden': hidden, 'dropout': dropout,
                         'epoch': epoch + 1, 'target': 'q_baseline', 'units': 'radians',
                         'mean_target': mean_target.tolist(), 'split': split}, output / 'best.pt')
     model = load_head(output / 'best.pt')
@@ -112,7 +148,10 @@ def train_head(takes: dict, output: Path, epochs: int = 100, seed: int = 42) -> 
                'test_mae_deg': float(np.mean(per_joint)), 'test_per_joint_mae_deg': per_joint,
                'joint_order': ['shoulder_pan', 'shoulder_lift', 'elbow', 'wrist_flex', 'wrist_roll', 'gripper'],
                'mean_baseline_test_mae_deg': baseline, 'best_val_mse_rad2': best,
-               'split': split, 'frames': {k: len(v[0]) for k, v in arrays.items()},
+               'split': split, 'frames': {**{k: len(v[0]) for k, v in arrays.items()},
+                                          **({'train_aug': n_aug} if use_aug else {})},
+               'config': {'dropout': dropout, 'weight_decay': weight_decay, 'feature_noise': feature_noise,
+                          'use_aug': use_aug, 'hidden': hidden},
                'seed': seed, 'epochs': epochs, 'torch_version': str(torch.__version__)}
     (output / 'metrics.json').write_text(json.dumps(metrics, indent=2))
     with (output / 'history.csv').open('w', newline='') as f:
@@ -155,7 +194,8 @@ def validate_setups(metadata: list[dict]) -> None:
                 raise ValueError(f'incompatible {key} across takes; record one fixed setup per experiment')
 
 
-def extract(root: Path, output: Path, control='reach', stride=6, batch_size=16, device='cuda') -> dict:
+def extract(root: Path, output: Path, control='reach', stride=6, batch_size=16, device='cuda',
+            augment: int = 0, seed: int = 42) -> dict:
     if batch_size < 1:
         raise ValueError('batch size must be positive')
     report = audit_sessions(root, control, stride)
@@ -172,22 +212,36 @@ def extract(root: Path, output: Path, control='reach', stride=6, batch_size=16, 
     output.mkdir(parents=True, exist_ok=False)
     manifest = {'model_id': MODEL_ID, 'model_revision': getattr(encoder.config, '_commit_hash', None),
                 'preprocessing': 'RGB full-frame letterbox 224; official normalization; CLS token',
-                'control': control, 'stride': stride, 'target': 'q_baseline', 'units': 'radians', 'takes': []}
+                'control': control, 'stride': stride, 'target': 'q_baseline', 'units': 'radians',
+                'augment_copies': augment, 'augment': 'affine scale 0.9-1.1, rot +-5 deg, shift +-5%, '
+                'contrast 0.8-1.2, brightness +-20; no horizontal flip', 'takes': []}
+    rng = np.random.default_rng(seed)
     for entry in report['accepted']:
         name = entry['name']
         path = Path(root) / name
         meta, rows = read_take(path, control, stride)
-        embeddings, batch = [], []
+        embeddings, batch, aug_emb, aug_batch = [], [], [], []
         for rgb in iter_rgb(path, rows):
-            batch.append(prepare_image(rgb))
+            img = prepare_image(rgb)
+            batch.append(img)
+            aug_batch.extend(augment_image(img, rng) for _ in range(augment))
             if len(batch) == batch_size:
                 embeddings.append(encode_images(batch, processor, encoder, device))
                 batch = []
+            if augment and len(aug_batch) >= batch_size:
+                aug_emb.append(encode_images(aug_batch, processor, encoder, device))
+                aug_batch = []
         if batch:
             embeddings.append(encode_images(batch, processor, encoder, device))
+        if aug_batch:
+            aug_emb.append(encode_images(aug_batch, processor, encoder, device))
         with np.load(path / 'frames.npz', allow_pickle=False) as z:
             targets = z['q_baseline'][rows].astype('float32')
-        np.savez_compressed(output / f'{name}.npz', features=np.concatenate(embeddings), targets=targets, rows=rows)
+        extra = {}
+        if augment:
+            extra['features_aug'] = np.concatenate(aug_emb).reshape(len(rows), augment, -1)
+        np.savez_compressed(output / f'{name}.npz', features=np.concatenate(embeddings), targets=targets, rows=rows,
+                            **extra)
         digest = hashlib.sha256((path / 'frames.npz').read_bytes()).hexdigest()
         manifest['takes'].append({'name': name, 'metadata': meta, 'source_npz_sha256': digest, 'frames': len(rows)})
         print(f'extracted {name}: {len(rows)} frames', flush=True)
@@ -208,11 +262,17 @@ def main(argv=None) -> int:
     ext.add_argument('--stride', type=int, default=6)
     ext.add_argument('--batch-size', type=int, default=16)
     ext.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    ext.add_argument('--augment', type=int, default=0, help='augmented copies per frame (ch. 12; no flips)')
     train = sub.add_parser('train', help='train custom head and evaluate held-out takes')
     train.add_argument('--cache', type=Path, required=True)
     train.add_argument('--output', type=Path, required=True)
     train.add_argument('--epochs', type=int, default=100)
     train.add_argument('--seed', type=int, default=42)
+    train.add_argument('--dropout', type=float, default=0.0)
+    train.add_argument('--weight-decay', type=float, default=0.01)
+    train.add_argument('--feature-noise', type=float, default=0.0, help='Gaussian noise x feature std')
+    train.add_argument('--use-aug', action='store_true', help='add augmented copies from the cache (train takes only)')
+    train.add_argument('--hidden', type=int, default=128)
     smoke = sub.add_parser('smoke-model', help='download pretrained model; check a head training step (not robot results)')
     smoke.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = ap.parse_args(argv)
@@ -223,7 +283,7 @@ def main(argv=None) -> int:
             return 0 if report['accepted'] and not report['rejected'] else 1
         if args.command == 'extract':
             extract(args.sessions or data_dir() / 'sessions', args.output, stride=args.stride,
-                    batch_size=args.batch_size, device=args.device)
+                    batch_size=args.batch_size, device=args.device, augment=args.augment)
         elif args.command == 'train':
             manifest = json.loads((args.cache / 'manifest.json').read_text())
             takes = {}
@@ -232,8 +292,10 @@ def main(argv=None) -> int:
                 if Path(name).name != name or '/' in name or '\\' in name:
                     raise ValueError('invalid take name in manifest')
                 with np.load(args.cache / f'{name}.npz', allow_pickle=False) as z:
-                    takes[name] = {k: z[k].copy() for k in ('features', 'targets')}
-            metrics = train_head(takes, args.output, args.epochs, args.seed)
+                    takes[name] = {k: z[k].copy() for k in ('features', 'targets', 'features_aug') if k in z}
+            metrics = train_head(takes, args.output, args.epochs, args.seed, dropout=args.dropout,
+                                 weight_decay=args.weight_decay, feature_noise=args.feature_noise,
+                                 use_aug=args.use_aug, hidden=args.hidden)
             (args.output / 'source_manifest.json').write_text(json.dumps(manifest, indent=2))
             print(json.dumps(metrics, indent=2))
         elif args.command == 'smoke-model':

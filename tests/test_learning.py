@@ -76,3 +76,48 @@ def test_validate_setups_ignores_measured_fps_jitter():
     c = {**base, 'camera_mode': {'width': 1280, 'height': 720, 'fps': 59.4, 'fourcc': 'MJPG'}}
     with pytest.raises(ValueError, match='camera_mode'):
         validate_setups([a, c])
+
+
+# ---- regularization experiment (ch. 12): dropout, feature noise, image augmentation ---------------------
+
+def _toy_takes(aug=False):
+    rng = np.random.default_rng(3)
+    takes = {}
+    for i in range(6):
+        x = rng.normal(size=(32, 4)).astype('float32')
+        t = {'features': x, 'targets': np.tile(x[:, :1] * 0.2 + 0.1, (1, 6)).astype('float32')}
+        if aug:
+            t['features_aug'] = (x[:, None, :] + rng.normal(scale=0.01, size=(32, 2, 4))).astype('float32')
+        takes[f'take_{i}'] = t
+    return takes
+
+
+def test_regularized_head_records_config_and_reloads(tmp_path):
+    m = train_head(_toy_takes(aug=True), tmp_path / 'r', epochs=40, seed=42, dropout=0.3, weight_decay=0.05,
+                   feature_noise=0.1, use_aug=True)
+    assert m['config'] == {'dropout': 0.3, 'weight_decay': 0.05, 'feature_noise': 0.1, 'use_aug': True,
+                           'hidden': 128}
+    head = load_head(tmp_path / 'r' / 'best.pt')
+    assert any(isinstance(l, torch.nn.Dropout) and l.p == 0.3 for l in head.net)
+    assert m['frames']['train_aug'] == len(m['split']['train']) * 32 * 2  # augmented copies only for TRAIN takes
+    assert m['frames']['train'] == len(m['split']['train']) * 32  # originals counted separately
+
+
+def test_augmented_copies_never_used_for_val_or_test(tmp_path):
+    takes = _toy_takes(aug=True)
+    for t in takes.values():
+        t['features_aug'][:] = 1e6  # poison: if used for val/test the metrics explode
+    m = train_head(takes, tmp_path / 'r', epochs=5, seed=42, use_aug=False)
+    assert np.isfinite(m['test_mae_deg']) and 'train_aug' not in m['frames']
+
+
+def test_augment_image_keeps_left_right_and_shape():
+    """No horizontal flip: a flip would swap the user's left/right and corrupt the targets."""
+    from cta.learning import augment_image
+    img = np.zeros((224, 224, 3), np.uint8)
+    img[:, :60] = 255  # bright LEFT band
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        out = augment_image(img, rng)
+        assert out.shape == img.shape and out.dtype == np.uint8
+        assert out[:, :80].mean() > out[:, -80:].mean()  # still brighter on the left
