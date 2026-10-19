@@ -573,17 +573,18 @@ class ReachPipeline(_BodyPipeline):
         self._try_lock(obs, pose_obs)
 
     def _try_lock(self, obs: HandObservation | None, pose_obs) -> None:
-        """Lock the arm whose Pose wrist is nearest the hand-tracker wrist; shoulders and wrists must be
-        finite and trusted (min(visibility, presence) >= pose_min_vis)."""
+        """Lock the configured arm when its Pose wrist is next to the hand-tracker wrist; both shoulders and
+        THAT wrist must be finite and trusted (min(visibility, presence) >= pose_min_vis). The other arm's
+        wrist is not required (2026-10-19: a resting off-frame right hand blocked the left-arm lock)."""
         if self.locked_side is not None or obs is None or pose_obs is None:
             return
-        idx = [11, 12, 15, 16]
+        wr = side_indices(self.want, self.mirrored)[2]
+        idx = [11, 12, wr]
         if not np.all(np.isfinite(np.asarray(pose_obs.img)[idx, :2])):
             return
         conf = np.minimum(np.asarray(pose_obs.vis, float), np.asarray(pose_obs.presence, float))
         if not np.all(conf[idx] >= self.pose_min_vis):
             return
-        wr = side_indices(self.want, self.mirrored)[2]
         if np.hypot(*(np.asarray(pose_obs.img)[wr, :2] - obs.lm_img[0, :2])) > LOCK_RADIUS:
             self._lock_refused = True  # the visible hand belongs to the other arm: never lock it
             return

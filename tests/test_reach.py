@@ -673,3 +673,18 @@ def test_lock_only_the_configured_arm(kin, gains):
     po = pose(side="left")
     p.step(hand(po), 0.1, po, depth(po))
     assert p.locked_side == "left"
+
+
+def test_lock_does_not_need_the_other_arms_wrist(kin, gains):
+    """Tray (2026-10-19): seated with the right hand resting below the frame, 'c' never locked the left arm."""
+    p = ReachPipeline(kin, None, gains, None, want="left", hand_point="wrist")
+    po = pose(side="left")
+    other_wr = side_indices("right", False)[2]
+    po.vis[other_wr] = 0.05  # the other wrist is off-frame / guessed
+    p.calibrate(hand(po), po)
+    assert p.locked_side == "left"
+    po2 = pose(side="left")
+    po2.vis[side_indices("left", False)[2]] = 0.05  # but the configured arm's own wrist IS required
+    q = ReachPipeline(kin, None, gains, None, want="left", hand_point="wrist")
+    q.calibrate(hand(po2), po2)
+    assert q.locked_side is None
