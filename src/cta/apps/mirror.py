@@ -189,10 +189,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-identity-map", action="store_true",
                     help="--robot so101: run without sim_real_map.json (identity sign/offset; unsafe unless verified)")
     ap.add_argument("--max-frames", type=int, default=0, help="exit after N frames (smoke run)")
+    ap.add_argument("--learned", type=Path, default=None, metavar="RUN_DIR",
+                    help="reach: the trained network drives joints 1-5 (gripper stays on the pinch rule); the reach "
+                         "controller still gates tracking and its q is logged as the teacher (D-V)")
     args = ap.parse_args(argv)
     if not 0.0 <= args.table_margin <= 0.05:
         ap.error(f"--table-margin must be between 0 and 0.05 m (got {args.table_margin})")
 
+    if args.learned is not None:
+        if args.control != "reach":
+            ap.error("--learned requires --control reach (the reach controller gates tracking)")
+        if args.mode == "paired":
+            ap.error("--learned drives the follower from the camera; it cannot be combined with --mode paired")
+        if not (args.learned / "best.pt").exists() or not (args.learned / "metrics.json").exists():
+            ap.error(f"--learned {args.learned}: best.pt and metrics.json not found")
     if args.autostart_record and not args.record:
         ap.error("--autostart-record requires --record NAME")
     if args.robot == "so101":
@@ -225,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     cam = Camera(args.camera, wanted)
     robot_cam = None
     depth_broken = False
-    tracker = pose_tracker = twin = depth_est = None
+    tracker = pose_tracker = twin = depth_est = driver = None
     depth_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depth")
     follower = leader = None
     keys = None
@@ -299,6 +309,13 @@ def main(argv: list[str] | None = None) -> int:
             pipe = MirrorPipeline(kin, cal, gains, smoother, aspect=aspect)
             contact = clearance_model() if follower is not None else None
         print(f"control: {args.control}")
+        if args.learned is not None:
+            from cta.learned import LearnedDriver
+            print(f"loading trained network from {args.learned} ...")
+            driver = LearnedDriver(args.learned)
+            driver.head_predict(np.zeros((360, 640, 3), np.uint8), np.full((21, 3), 0.5))  # GPU warm-up
+            print(f"DRIVER: neural network ({driver.input} input) drives joints 1-5; gripper = pinch rule")
+        last_net = None
         if args.control == "reach":
             print(f"reach mapping: {args.reach_mapping}; press c in a comfortable neutral pose with your arm visible")
         last_tracking_hold = None
@@ -357,6 +374,7 @@ def main(argv: list[str] | None = None) -> int:
                 "depth_model": DEPTH_MODEL_ID if getattr(pipe, "fwd_source", None) == "depth" else None,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "robot_camera": args.robot_camera,
+                "driver": f"learned:{args.learned}" if args.learned is not None else "controller",
             }
             r = SessionRecorder(sessions_root, name, meta,
                                 robot_video_size=(640, 360) if robot_cam is not None else None)
@@ -487,10 +505,14 @@ def main(argv: list[str] | None = None) -> int:
                 elif last_tracking_hold is not None and status == "TRACKING":
                     print("TRACKING RESUMED (stable)")
                 last_tracking_hold = tracking_hold
-            q_baseline = q.copy()
+            q_baseline = q.copy()  # always the reach controller (the teacher): recorded as the training target
             q_leader = None
             q_foll = None
             extra = None
+            if driver is not None:
+                from cta.learned import learned_command
+                q, last_net = learned_command(driver, status, obs, rgb, t_frame, q_baseline, last_net)
+                extra = {"teacher": q_baseline, "network": q}
             bus_err: Exception | None = None
             if follower is not None:
                 dt = 1 / 60 if last_cmd_t is None else t_frame - last_cmd_t

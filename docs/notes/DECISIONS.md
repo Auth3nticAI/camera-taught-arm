@@ -168,6 +168,20 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Comparison:** same 12 takes and same split. Select on validation; the test take is scored once.
 - **Outcome:** hand crop + regularization selected by 11-fold CV (beats the full frame in 11/11 folds). Test 20.5° vs 21.3° vs 31.2° baseline; wrist roll −20%; gripper did not improve.
 
+### D-V · 2026-10-19 · The demo shows the trained network driving the real arm (Tray)
+- **Why:** the course demo must show the model running. The classical reach controller is the teacher, and the network is the student.
+- **Choice:**
+  - `cta-mirror ... --learned RUN_DIR` (selected run: `head_v3_hand_reg`). The network drives joints 1–5; the gripper stays on the pinch rule (Tray chose this; the learned gripper error, 33°, is the worst).
+  - The reach controller still gates tracking (lock, face gate, engagement) and its q is logged as the teacher.
+  - The send path is unchanged: joint limits, speed limit, lead bound, table clearance.
+  - A One Euro filter (1 Hz, beta 0.3) on the network output.
+- **Dry run on the test take:**
+  - smoothing cuts the median joint speed from 72 to 20°/s (teacher: 7) and the p95 from 394 to 137°/s;
+  - MAE joints 1–5 is 17.7°;
+  - network latency is 4.9 ms per frame on the RTX 4070 Ti.
+- **Rollout:** sim first (`--robot none`), then the real arm at `--max-speed-dps 60`.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)
