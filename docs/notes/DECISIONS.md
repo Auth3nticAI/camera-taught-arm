@@ -166,7 +166,7 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
   - Its DINOv2 CLS features are cached next to the full-frame features (`extract --hand-crop`).
   - Head input is `--input full | hand | both` (both = 768-d concatenation).
 - **Comparison:** same 12 takes and same split. Select on validation; the test take is scored once.
-- **Outcome:** —
+- **Outcome:** hand crop + regularization selected by 11-fold CV (beats the full frame in 11/11 folds). Test 20.5° vs 21.3° vs 31.2° baseline; wrist roll −20%; gripper did not improve.
 
 ---
 

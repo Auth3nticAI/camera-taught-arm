@@ -161,3 +161,12 @@ def test_select_features_concatenates_full_and_hand_including_aug():
     assert select_features(z, 'full')['features'].shape == (5, 4)
     with pytest.raises(ValueError, match='features_hand'):
         select_features({'features': np.ones((5, 4)), 'targets': np.zeros((5, 6))}, 'both')
+
+
+def test_explicit_split_is_used_and_must_be_disjoint(tmp_path):
+    takes = _toy_takes()
+    split = {'train': ['take_0', 'take_1', 'take_2', 'take_3'], 'val': ['take_4'], 'test': ['take_5']}
+    m = train_head(takes, tmp_path / 'r', epochs=2, split=split)
+    assert m['split'] == split
+    with pytest.raises(ValueError, match='disjoint'):
+        train_head(takes, tmp_path / 'r2', epochs=1, split={**split, 'val': ['take_0']})

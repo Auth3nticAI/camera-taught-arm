@@ -226,3 +226,28 @@ Final wrist-recovery verification: 238 tests passed in 45.34 seconds. git diff -
   - Arm-scale joints (pan, wrist_flex) improved.
 - **Caveat:** val and test are one take each, so per-take variance dominates the gap between A and B. Leave-one-take-out cross-validation would give a firmer answer.
 - **Figures:** `docs/figures/learning_curves.png`, `docs/figures/per_joint_mae.png`. Runs are in `cta-data/learning/head_v2_base/` and `cta-data/learning/head_v2_reg/`.
+
+## 2026-10-19 · Hand-crop input (D-U) ✅
+- **Input:** a 224×224 close-up cut around the 21 recorded hand landmarks (box ×1.6, minimum 5% of the frame, black padding), checked visually on 12 sample frames. Frozen DINOv2 CLS features are cached as `reach_dino_v2_hand` (full + hand, 4 augmented copies each).
+- **Same 12 takes and same split** (val train2_08, test train2_01). The full-frame run reproduces 21.3° exactly, which is a sanity check.
+
+| input | best val MSE | test MAE | pan | lift | elbow | wflex | roll | grip |
+|---|---|---|---|---|---|---|---|---|
+| full | 0.321 | 21.3° | 10.2 | 24.3 | 19.9 | 17.6 | 28.7 | 27.1 |
+| hand | 0.244 | 20.5° | 8.1 | 23.4 | 19.9 | 17.1 | 23.7 | 30.5 |
+| both | 0.256 | 20.6° | 8.8 | 23.8 | 19.2 | 16.9 | 25.1 | 29.5 |
+| both + reg | 0.236 | 18.7° | 8.8 | 21.6 | 19.8 | 15.4 | 21.4 | 24.9 |
+| **hand + reg (selected)** | **0.235** | **20.5°** | 9.5 | 21.5 | 18.5 | 17.8 | 22.9 | 32.7 |
+
+- **Tie-break without touching test:** hand + reg and both + reg tied on the single val take. Leave-one-take-out CV over the 11 non-test takes (`scripts/cv_inputs.py`, `cv_v3/cv_summary.json`) gave mean val MSE:
+  - full 0.308 ± 0.063;
+  - **hand + reg 0.249 ± 0.058**;
+  - both + reg 0.258 ± 0.064.
+- Hand + reg beats full in **11/11 folds** (19% lower val MSE) and beats both + reg in 7/11. **Selected: hand + reg.**
+- **Selected model on test:** 20.5° vs 21.3° (full) vs 31.2° (mean baseline), i.e. 34% below the baseline.
+- **Wrist roll improved most:** 28.7° → 22.9° (−20%).
+- **Reported honestly:**
+  - Gripper got worse (27.1° → 32.7°).
+  - Both + reg scored better on test (18.7°), but it lost the CV selection. Choosing it by its test score would leak the test take.
+- **Why gripper may not improve:** the gripper target is a snapped pinch (open/closed, almost binary), so MSE regression on a step target is a poor fit. Next fix: a classification output for the gripper.
+- **Figures:** `docs/figures/cv_inputs.png`, `docs/figures/per_joint_mae_handcrop.png`.

@@ -39,6 +39,13 @@ Running talking points for two decks. Add as you go; trim at the end.
 - **Lesson to say out loud:** "Regularization stopped the memorizing, but the error didn't drop. The bottleneck is what the network sees, not how it is trained. The hand is a few pixels in a whole-body frame, so wrist roll and gripper stay hard." That points straight to the next step: a hand-crop input.
 - Per-joint chart: `docs/figures/per_joint_mae.png`.
 
+**Results slide 2: improving the network (hand-crop input, D-U):**
+- The diagnosis from experiment 1 was that the hand is only a few pixels. Fix: crop it, using the hand tracker's landmarks.
+- **Leave-one-take-out cross-validation** (`docs/figures/cv_inputs.png`): the hand crop beats the full frame in **11 of 11** folds.
+- **Final held-out test:** **20.5°** vs 31.2° baseline (34% lower). Wrist roll error −20%.
+- **Rigor talking point:** "Two models tied on validation. Instead of peeking at the test take, I cross-validated across takes to choose."
+- **Honest limit:** the gripper did not improve. Its target is open/closed, so the next step is a classifier output for it.
+
 ---
 
 ## Client / investor deck (audience: robotics teams, investors · goal: start the company)

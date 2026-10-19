@@ -105,13 +105,16 @@ def load_head(path: Path) -> JointHead:
 
 def train_head(takes: dict, output: Path, epochs: int = 100, seed: int = 42, dropout: float = 0.0,
                weight_decay: float = 0.01, feature_noise: float = 0.0, use_aug: bool = False,
-               hidden: int = 128) -> dict:
+               hidden: int = 128, split: dict | None = None) -> dict:
     """Train on cached frozen features, select on validation, evaluate test once.
     Regularization (ch. 12): dropout, AdamW weight decay, Gaussian noise on standardized features, and
     augmented-image feature copies ('features_aug', TRAIN takes only - never val/test)."""
     if epochs < 1:
         raise ValueError('epochs must be positive')
-    split = split_takes(list(takes), seed)
+    if split is None:
+        split = split_takes(list(takes), seed)
+    elif set(sum(split.values(), [])) - set(takes) or set(split['train']) & set(split['val'] + split['test']):
+        raise ValueError('split must use known takes and keep train disjoint from val/test')
     dim = None
     for name, take in takes.items():
         x, y = take['features'], take['targets']
