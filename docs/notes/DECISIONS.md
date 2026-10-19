@@ -151,6 +151,23 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Data note:** reach takes `reach_train_01..04` were recorded with `mirrored: true`, so their `q_baseline` lateral labels are inverted. Their raw hand, pose, depth and video data are fine. Re-derive the labels by replaying with `mirrored=False` before any training.
 - **Outcome:** —
 
+### D-U · 2026-10-19 · Next model experiment: hand-crop input (Tray)
+- **Evidence:**
+  - Dataset v2 with the ch. 12 regularization experiment: regularization cut the train/val gap from 55× to 3.4×, but test error stayed about 21–22°.
+  - Validation loss was flat after about epoch 5.
+  - wrist_roll and gripper are close to the mean-pose baseline. The hand covers a few patches of a 224×224 whole-body frame.
+- **Options weighed:**
+  - hand-crop input (recommended);
+  - leave-one-take-out cross-validation;
+  - GRU smoother;
+  - stop modelling.
+- **Choice:** hand-crop input.
+  - A 224×224 close-up is cut around the 21 recorded hand landmarks (`lm_img`): box ×1.6, minimum 5% of the frame, black padding.
+  - Its DINOv2 CLS features are cached next to the full-frame features (`extract --hand-crop`).
+  - Head input is `--input full | hand | both` (both = 768-d concatenation).
+- **Comparison:** same 12 takes and same split. Select on validation; the test take is scored once.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)

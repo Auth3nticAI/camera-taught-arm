@@ -121,3 +121,43 @@ def test_augment_image_keeps_left_right_and_shape():
         out = augment_image(img, rng)
         assert out.shape == img.shape and out.dtype == np.uint8
         assert out[:, :80].mean() > out[:, -80:].mean()  # still brighter on the left
+
+
+# ---- hand-crop input (D-U): a close-up of the hand next to the full frame ---------------------------------
+
+def _lm_box(u0, v0, u1, v1):
+    lm = np.zeros((21, 3))
+    lm[:, 0] = np.linspace(u0, u1, 21)
+    lm[:, 1] = np.linspace(v0, v1, 21)
+    return lm
+
+
+def test_hand_crop_centres_the_hand_and_pads_outside_the_image():
+    from cta.learning import hand_crop
+    img = np.zeros((100, 200, 3), np.uint8)
+    img[40:60, 140:160] = 255  # the "hand"
+    out = hand_crop(img, _lm_box(0.70, 0.40, 0.80, 0.60))
+    assert out.shape == (224, 224, 3) and out.dtype == np.uint8
+    assert out[112, 112].min() == 255  # hand at the centre of the crop
+    assert out[100:124, 100:124].mean() > 200
+    edge = hand_crop(img, _lm_box(0.95, 0.90, 1.05, 1.10))  # partly off-image: zero padding, no crash
+    assert edge.shape == (224, 224, 3) and edge[-1, -1].max() == 0
+
+
+def test_hand_crop_without_landmarks_is_black():
+    from cta.learning import hand_crop
+    out = hand_crop(np.full((50, 50, 3), 200, np.uint8), np.full((21, 3), np.nan))
+    assert out.shape == (224, 224, 3) and out.max() == 0
+
+
+def test_select_features_concatenates_full_and_hand_including_aug():
+    from cta.learning import select_features
+    z = {'features': np.ones((5, 4)), 'features_hand': np.full((5, 4), 2.0), 'targets': np.zeros((5, 6)),
+         'features_aug': np.ones((5, 2, 4)), 'features_hand_aug': np.full((5, 2, 4), 2.0)}
+    both = select_features(z, 'both')
+    assert both['features'].shape == (5, 8) and both['features_aug'].shape == (5, 2, 8)
+    assert both['features'][0].tolist() == [1, 1, 1, 1, 2, 2, 2, 2]
+    assert select_features(z, 'hand')['features'][0].tolist() == [2, 2, 2, 2]
+    assert select_features(z, 'full')['features'].shape == (5, 4)
+    with pytest.raises(ValueError, match='features_hand'):
+        select_features({'features': np.ones((5, 4)), 'targets': np.zeros((5, 6))}, 'both')

@@ -33,6 +33,39 @@ def prepare_image(rgb: np.ndarray) -> np.ndarray:
     return image
 
 
+HAND_MARGIN = 1.6     # crop side = landmark box side x this (fingers + a little context)
+HAND_MIN_SIDE = 0.05  # of the longer image side, so a far-away hand is not blown up to noise
+
+
+def hand_crop(rgb: np.ndarray, lm_img: np.ndarray) -> np.ndarray:
+    """224x224 square close-up centred on the 21 hand landmarks (normalized image coords, may exceed 0..1).
+    Off-image parts are black; no landmarks gives a black image (D-U)."""
+    h, w = rgb.shape[:2]
+    uv = np.asarray(lm_img, dtype=np.float64)[:, :2]
+    if not np.isfinite(uv).all():
+        return np.zeros((224, 224, 3), np.uint8)
+    px = uv * (w, h)
+    (x0, y0), (x1, y1) = px.min(0), px.max(0)
+    side = max(max(x1 - x0, y1 - y0) * HAND_MARGIN, HAND_MIN_SIDE * max(h, w), 1.0)
+    k = 224 / side
+    m = np.array([[k, 0, 112 - k * (x0 + x1) / 2], [0, k, 112 - k * (y0 + y1) / 2]])
+    return cv2.warpAffine(rgb, m, (224, 224), flags=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+
+def select_features(z, input_mode: str = 'full') -> dict:
+    """Pick the head input from a cached take: 'full' frame, 'hand' crop, or 'both' concatenated (D-U)."""
+    if input_mode not in ('full', 'hand', 'both'):
+        raise ValueError(f'unknown input {input_mode!r}')
+    keys = {'full': [''], 'hand': ['_hand'], 'both': ['', '_hand']}[input_mode]
+    if any(f'features{k}' not in z for k in keys):
+        raise ValueError(f'input {input_mode!r} needs features_hand in the cache (extract --hand-crop)')
+    out = {'targets': z['targets'], 'features': np.concatenate([z[f'features{k}'] for k in keys], axis=-1)}
+    if all(f'features{k}_aug' in z for k in keys):
+        out['features_aug'] = np.concatenate([z[f'features{k}_aug'] for k in keys], axis=-1)
+    return out
+
+
 def augment_image(img: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     """Ch. 12 augmentation for a letterboxed 224x224 frame: small scale/shift/rotation + brightness/contrast.
     NEVER a horizontal flip - that would swap the user's left/right and corrupt the joint targets."""
@@ -195,7 +228,7 @@ def validate_setups(metadata: list[dict]) -> None:
 
 
 def extract(root: Path, output: Path, control='reach', stride=6, batch_size=16, device='cuda',
-            augment: int = 0, seed: int = 42) -> dict:
+            augment: int = 0, seed: int = 42, hand: bool = False) -> dict:
     if batch_size < 1:
         raise ValueError('batch size must be positive')
     report = audit_sessions(root, control, stride)
@@ -214,34 +247,40 @@ def extract(root: Path, output: Path, control='reach', stride=6, batch_size=16, 
                 'preprocessing': 'RGB full-frame letterbox 224; official normalization; CLS token',
                 'control': control, 'stride': stride, 'target': 'q_baseline', 'units': 'radians',
                 'augment_copies': augment, 'augment': 'affine scale 0.9-1.1, rot +-5 deg, shift +-5%, '
-                'contrast 0.8-1.2, brightness +-20; no horizontal flip', 'takes': []}
+                'contrast 0.8-1.2, brightness +-20; no horizontal flip',
+                'hand_crop': f'lm_img box x{HAND_MARGIN}, min side {HAND_MIN_SIDE} of frame, 224 square' if hand
+                else None, 'takes': []}
     rng = np.random.default_rng(seed)
     for entry in report['accepted']:
         name = entry['name']
         path = Path(root) / name
         meta, rows = read_take(path, control, stride)
-        embeddings, batch, aug_emb, aug_batch = [], [], [], []
-        for rgb in iter_rgb(path, rows):
-            img = prepare_image(rgb)
-            batch.append(img)
-            aug_batch.extend(augment_image(img, rng) for _ in range(augment))
-            if len(batch) == batch_size:
-                embeddings.append(encode_images(batch, processor, encoder, device))
-                batch = []
-            if augment and len(aug_batch) >= batch_size:
-                aug_emb.append(encode_images(aug_batch, processor, encoder, device))
-                aug_batch = []
-        if batch:
-            embeddings.append(encode_images(batch, processor, encoder, device))
-        if aug_batch:
-            aug_emb.append(encode_images(aug_batch, processor, encoder, device))
         with np.load(path / 'frames.npz', allow_pickle=False) as z:
             targets = z['q_baseline'][rows].astype('float32')
-        extra = {}
-        if augment:
-            extra['features_aug'] = np.concatenate(aug_emb).reshape(len(rows), augment, -1)
-        np.savez_compressed(output / f'{name}.npz', features=np.concatenate(embeddings), targets=targets, rows=rows,
-                            **extra)
+            lms = z['lm_img'][rows] if hand else None
+        streams = ['features'] + (['features_hand'] if hand else [])
+        pending = {k: [] for k in streams + [f'{k}_aug' for k in streams]}
+        done = {k: [] for k in pending}
+
+        def flush(min_size):
+            for k, imgs in pending.items():
+                if imgs and len(imgs) >= min_size:
+                    done[k].append(encode_images(imgs, processor, encoder, device))
+                    pending[k] = []
+
+        for i, rgb in enumerate(iter_rgb(path, rows)):
+            views = {'features': prepare_image(rgb)}
+            if hand:
+                views['features_hand'] = hand_crop(rgb, lms[i])
+            for k, img in views.items():
+                pending[k].append(img)
+                pending[f'{k}_aug'].extend(augment_image(img, rng) for _ in range(augment))
+            flush(batch_size)
+        flush(1)
+        arrays = {k: np.concatenate(v) for k, v in done.items() if v}
+        for k in [k for k in arrays if k.endswith('_aug')]:
+            arrays[k] = arrays[k].reshape(len(rows), augment, -1)
+        np.savez_compressed(output / f'{name}.npz', targets=targets, rows=rows, **arrays)
         digest = hashlib.sha256((path / 'frames.npz').read_bytes()).hexdigest()
         manifest['takes'].append({'name': name, 'metadata': meta, 'source_npz_sha256': digest, 'frames': len(rows)})
         print(f'extracted {name}: {len(rows)} frames', flush=True)
@@ -263,6 +302,7 @@ def main(argv=None) -> int:
     ext.add_argument('--batch-size', type=int, default=16)
     ext.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     ext.add_argument('--augment', type=int, default=0, help='augmented copies per frame (ch. 12; no flips)')
+    ext.add_argument('--hand-crop', action='store_true', help='also cache features of a hand close-up (D-U)')
     train = sub.add_parser('train', help='train custom head and evaluate held-out takes')
     train.add_argument('--cache', type=Path, required=True)
     train.add_argument('--output', type=Path, required=True)
@@ -273,6 +313,8 @@ def main(argv=None) -> int:
     train.add_argument('--feature-noise', type=float, default=0.0, help='Gaussian noise x feature std')
     train.add_argument('--use-aug', action='store_true', help='add augmented copies from the cache (train takes only)')
     train.add_argument('--hidden', type=int, default=128)
+    train.add_argument('--input', choices=('full', 'hand', 'both'), default='full',
+                       help='head input: full frame, hand crop, or both concatenated (D-U)')
     smoke = sub.add_parser('smoke-model', help='download pretrained model; check a head training step (not robot results)')
     smoke.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = ap.parse_args(argv)
@@ -283,7 +325,8 @@ def main(argv=None) -> int:
             return 0 if report['accepted'] and not report['rejected'] else 1
         if args.command == 'extract':
             extract(args.sessions or data_dir() / 'sessions', args.output, stride=args.stride,
-                    batch_size=args.batch_size, device=args.device, augment=args.augment)
+                    batch_size=args.batch_size, device=args.device, augment=args.augment,
+                    hand=args.hand_crop)
         elif args.command == 'train':
             manifest = json.loads((args.cache / 'manifest.json').read_text())
             takes = {}
@@ -292,10 +335,12 @@ def main(argv=None) -> int:
                 if Path(name).name != name or '/' in name or '\\' in name:
                     raise ValueError('invalid take name in manifest')
                 with np.load(args.cache / f'{name}.npz', allow_pickle=False) as z:
-                    takes[name] = {k: z[k].copy() for k in ('features', 'targets', 'features_aug') if k in z}
+                    takes[name] = {k: v.copy() for k, v in select_features(z, args.input).items()}
             metrics = train_head(takes, args.output, args.epochs, args.seed, dropout=args.dropout,
                                  weight_decay=args.weight_decay, feature_noise=args.feature_noise,
                                  use_aug=args.use_aug, hidden=args.hidden)
+            metrics['config']['input'] = args.input
+            (args.output / 'metrics.json').write_text(json.dumps(metrics, indent=2))
             (args.output / 'source_manifest.json').write_text(json.dumps(manifest, indent=2))
             print(json.dumps(metrics, indent=2))
         elif args.command == 'smoke-model':
