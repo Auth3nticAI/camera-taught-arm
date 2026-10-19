@@ -192,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--learned", type=Path, default=None, metavar="RUN_DIR",
                     help="reach: the trained network drives joints 1-5 (gripper stays on the pinch rule); the reach "
                          "controller still gates tracking and its q is logged as the teacher (D-V)")
+    ap.add_argument("--learned-cutoff", type=float, default=None,
+                    help="--learned: One Euro min cutoff, Hz (default 0.3; lower = calmer but laggier)")
+    ap.add_argument("--learned-beta", type=float, default=None,
+                    help="--learned: One Euro beta (default 0.05; higher = less lag on fast moves)")
     args = ap.parse_args(argv)
     if not 0.0 <= args.table_margin <= 0.05:
         ap.error(f"--table-margin must be between 0 and 0.05 m (got {args.table_margin})")
@@ -312,9 +316,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.learned is not None:
             from cta.learned import LearnedDriver
             print(f"loading trained network from {args.learned} ...")
-            driver = LearnedDriver(args.learned)
+            from cta.learned import NET_BETA, NET_MIN_CUTOFF
+            driver = LearnedDriver(args.learned,
+                                   min_cutoff=NET_MIN_CUTOFF if args.learned_cutoff is None else args.learned_cutoff,
+                                   beta=NET_BETA if args.learned_beta is None else args.learned_beta)
             driver.head_predict(np.zeros((360, 640, 3), np.uint8), np.full((21, 3), 0.5))  # GPU warm-up
-            print(f"DRIVER: neural network ({driver.input} input) drives joints 1-5; gripper = pinch rule")
+            print(f"DRIVER: neural network ({driver.input} input) drives joints 1-5; gripper = pinch rule; "
+                  f"smoothing {driver.smoother.min_cutoff} Hz / beta {driver.smoother.beta}")
         last_net = None
         if args.control == "reach":
             print(f"reach mapping: {args.reach_mapping}; press c in a comfortable neutral pose with your arm visible")

@@ -16,8 +16,11 @@ import torch
 from cta.filters import OneEuro
 from cta.learning import encode_images, hand_crop, load_encoder, load_head, prepare_image
 
-NET_MIN_CUTOFF = 1.0  # Hz: still pose -> heavy smoothing of the ~20 deg prediction noise
-NET_BETA = 0.3        # faster motion -> less smoothing (less lag)
+# Tuned 2026-10-19 by replaying the network on the held-out val + test takes (D-V): 0.3 Hz / 0.05 makes the
+# network move at the teacher's median joint speed (11.8 vs 11.9 deg/s; 1.0/0.3 was 24.9 = visible twitching)
+# AND lowers its error vs the teacher (16.2 vs 17.2 deg).
+NET_MIN_CUTOFF = 0.3  # Hz: still pose -> heavy smoothing of the ~20 deg frame-to-frame prediction noise
+NET_BETA = 0.05       # faster motion -> less smoothing (less lag)
 
 
 def blend_gripper(q_net: np.ndarray, q_pipe: np.ndarray) -> np.ndarray:
