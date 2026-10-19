@@ -64,3 +64,15 @@ def test_empty_data_cli_returns_actionable_failure_without_model_download(tmp_pa
     assert main(['extract', '--sessions', str(tmp_path), '--output', str(tmp_path / 'cache')]) == 1
     assert 'at least 3' in capsys.readouterr().out
     assert not (tmp_path / 'cache').exists()
+
+
+def test_validate_setups_ignores_measured_fps_jitter():
+    """Same camera, same mode: the measured fps differs slightly every run (59.41 vs 59.47) - not a new setup."""
+    from cta.learning import validate_setups
+    base = {'hand': 'left', 'mirrored': False, 'control': 'reach'}
+    a = {**base, 'camera_mode': {'width': 1920, 'height': 1080, 'fps': 59.411, 'fourcc': 'MJPG'}}
+    b = {**base, 'camera_mode': {'width': 1920, 'height': 1080, 'fps': 59.471, 'fourcc': 'MJPG'}}
+    validate_setups([a, b])
+    c = {**base, 'camera_mode': {'width': 1280, 'height': 720, 'fps': 59.4, 'fourcc': 'MJPG'}}
+    with pytest.raises(ValueError, match='camera_mode'):
+        validate_setups([a, c])

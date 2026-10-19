@@ -189,3 +189,16 @@ Final wrist-recovery verification: 238 tests passed in 45.34 seconds. git diff -
   - the camera is not released mid-read;
   - no exit hang on a dead GPU worker.
 - 296 tests passing.
+
+## 2026-10-18 (night) · First trained network: DINOv2 features → PyTorch joint head ✅
+- **Data:** 5 takes (`train_01..05`, one session, one calibration and home pose) recorded with `--robot none` at stride 6, giving 977 frames.
+  - Earlier takes were moved aside rather than deleted: `reach_train_01..04` → `sessions_mislabeled/` (inverted left/right, D-T); `tune_01` → `sessions_other_setup/` (different calibration).
+  - The audit now rejects `--mirrored` takes automatically.
+- **Split by whole take** (ch. 10): train = train_01/02/04 (631 frames), val = train_03 (151), test = train_05 (195).
+- **Model:** frozen `facebook/dinov2-small` CLS features → custom PyTorch head predicting the 6 joint targets (`q_baseline`, the reach controller's output). 100 epochs.
+- **Held-out test MAE: 19.2°** vs a mean-pose baseline of **26.3°**, i.e. **27% lower**.
+  - Per joint (pan/lift/elbow/wrist_flex/roll/gripper): 10.0 / 22.3 / 23.7 / 18.6 / 13.3 / 27.6°.
+- **Overfitting (ch. 12):** train MSE 0.0009 vs best val MSE 0.173 (rad²). The head memorizes the 3 training takes.
+- **Claim for the slides:** the network imitates the webcam controller from video (imitation error vs the classical teacher), not physical accuracy.
+- **Next:** more takes (variety), plus a regularization/augmentation experiment chosen on validation, with the test take kept untouched.
+- **Outputs:** `cta-data/learning/reach_head_v1/` (`best.pt`, `history.csv`, `metrics.json`).

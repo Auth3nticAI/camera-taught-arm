@@ -141,10 +141,17 @@ def encode_images(images: list, processor, encoder, device: str) -> np.ndarray:
 def validate_setups(metadata: list[dict]) -> None:
     """A single-image student cannot infer a hidden calibration/setup change."""
     keys = ('hand', 'mirrored', 'camera_mode', 'calibration', 'gains', 'control', 'reach_mapping', 'reach_home_n')
+
+    def norm(key, value):
+        # camera_mode carries the MEASURED fps, which jitters run to run (59.41 vs 59.47) on the same setup
+        if key == 'camera_mode' and isinstance(value, dict):
+            return (value.get('width'), value.get('height'), value.get('fourcc'), round(float(value.get('fps', 0))))
+        return value
+
     first = metadata[0]
     for meta in metadata[1:]:
         for key in keys:
-            if meta.get(key) != first.get(key):
+            if norm(key, meta.get(key)) != norm(key, first.get(key)):
                 raise ValueError(f'incompatible {key} across takes; record one fixed setup per experiment')
 
 
