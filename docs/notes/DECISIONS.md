@@ -182,6 +182,21 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
 - **Rollout:** sim first (`--robot none`), then the real arm at `--max-speed-dps 60`.
 - **Outcome:** live sim test at 0.2 Hz / beta 0.05: Tray reports "good to go" (2026-10-19). Next: real arm at 60 deg/s, then the demo video.
 
+### D-W · 2026-10-19 · Priority order: class first, then startup (Tray)
+- **Question:** Tray asked "isn't it supposed to move on its own and recognize the ball?"
+  - Answer: the built system is stage 1 (learn from the human).
+  - Autonomy (stage 2: wrist camera → find the ball → pick) needs a detector or a learned policy, and is not built.
+- **Tray:** "we need to do class then startup in that order."
+- **Class (A):**
+  - Tonight: film the network-driven reach demo (`--learned`).
+  - Then, laptop only: live webcam → sim run for Oct 24, the video edit, and the 5-slide deck.
+  - Autonomy is not required for the grade.
+- **Startup:**
+  - Tonight, the last arm night: bank 20–30 ball-pick takes with the wrist camera (`--record pick`, teacher controller for precise grasps).
+  - After Oct 24: LeRobot conversion → ACT policy (wrist camera → arm) → autonomous ball pick.
+  - Find-and-grab with OWLv2 + visual servoing was considered and deferred.
+- **Outcome:** —
+
 ---
 
 ## Open (waiting for Tray)
