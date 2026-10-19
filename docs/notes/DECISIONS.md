@@ -174,7 +174,7 @@ Format: `D-## · date · decision` → options → **choice** → why → outcom
   - `cta-mirror ... --learned RUN_DIR` (selected run: `head_v3_hand_reg`). The network drives joints 1–5; the gripper stays on the pinch rule (Tray chose this; the learned gripper error, 33°, is the worst).
   - The reach controller still gates tracking (lock, face gate, engagement) and its q is logged as the teacher.
   - The send path is unchanged: joint limits, speed limit, lead bound, table clearance.
-  - A One Euro filter on the network output. The first live sim test at 1 Hz / beta 0.3 twitched visibly. A sweep on the val + test takes picked 0.3 Hz / beta 0.05: it matches the teacher median joint speed (11.8 vs 11.9 deg/s) and lowers MAE (17.2 to 16.2 deg). Tunable with `--learned-cutoff` and `--learned-beta`.
+  - A One Euro filter on the network output. The first live sim test at 1 Hz / beta 0.3 twitched visibly. A sweep on the val + test takes picked 0.3 Hz / beta 0.05: it matches the teacher median joint speed (11.8 vs 11.9 deg/s) and lowers MAE (17.2 to 16.2 deg). Tunable with `--learned-cutoff` and `--learned-beta`. **Tray set the cutoff to 0.2 Hz** (sweep: 9.6 deg/s, the same 16.2 deg MAE) as the default.
 - **Dry run on the test take:**
   - smoothing cuts the median joint speed from 72 to 20°/s (teacher: 7) and the p95 from 394 to 137°/s;
   - MAE joints 1–5 is 17.7°;

@@ -193,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="reach: the trained network drives joints 1-5 (gripper stays on the pinch rule); the reach "
                          "controller still gates tracking and its q is logged as the teacher (D-V)")
     ap.add_argument("--learned-cutoff", type=float, default=None,
-                    help="--learned: One Euro min cutoff, Hz (default 0.3; lower = calmer but laggier)")
+                    help="--learned: One Euro min cutoff, Hz (default 0.2; lower = calmer but laggier)")
     ap.add_argument("--learned-beta", type=float, default=None,
                     help="--learned: One Euro beta (default 0.05; higher = less lag on fast moves)")
     args = ap.parse_args(argv)

@@ -19,7 +19,7 @@ from cta.learning import encode_images, hand_crop, load_encoder, load_head, prep
 # Tuned 2026-10-19 by replaying the network on the held-out val + test takes (D-V): 0.3 Hz / 0.05 makes the
 # network move at the teacher's median joint speed (11.8 vs 11.9 deg/s; 1.0/0.3 was 24.9 = visible twitching)
 # AND lowers its error vs the teacher (16.2 vs 17.2 deg).
-NET_MIN_CUTOFF = 0.3  # Hz: still pose -> heavy smoothing of the ~20 deg frame-to-frame prediction noise
+NET_MIN_CUTOFF = 0.2  # Hz (Tray: 0.2 after the live sim test; sweep: 9.6 deg/s, same 16.2 deg MAE): still pose -> heavy smoothing of the ~20 deg frame-to-frame prediction noise
 NET_BETA = 0.05       # faster motion -> less smoothing (less lag)
 
 
