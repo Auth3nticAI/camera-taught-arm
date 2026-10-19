@@ -74,3 +74,13 @@ def test_corrupt_archive_is_reported_without_losing_other_takes(tmp_path):
     report = audit_sessions(tmp_path)
     assert len(report['rejected']) == 1
     assert report['accepted'] == []
+
+
+def test_rejects_takes_recorded_with_mirrored_flag(tmp_path):
+    """D-T (2026-10-18): the OBSBOT image is NOT mirrored; takes recorded with --mirrored have inverted
+    left/right targets and must never enter training."""
+    path = make_take(tmp_path, mirrored=True)
+    with pytest.raises(ValueError, match='mirrored'):
+        read_take(path)
+    rep = audit_sessions(tmp_path)
+    assert rep['accepted'] == [] and 'mirrored' in rep['rejected'][0]['reason']

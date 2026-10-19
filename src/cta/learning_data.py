@@ -17,6 +17,10 @@ def read_take(path: Path, control: str = 'reach', stride: int = 6) -> tuple[dict
     meta = json.loads((path / 'meta.json').read_text())
     if meta.get('mode') != 'free' or meta.get('control') != control:
         raise ValueError(f'need free webcam {control} take, got {meta.get("mode")}/{meta.get("control")}')
+    if meta.get('mirrored'):
+        # D-T (2026-10-18): the OBSBOT image is not mirrored; --mirrored inverted the left/right targets.
+        raise ValueError('recorded with --mirrored: left/right targets are inverted (decision D-T); re-record '
+                         'or re-derive targets before training')
     with np.load(path / 'frames.npz', allow_pickle=False) as z:
         q, t, status = z['q_baseline'], z['t'], z['status']
         n = len(t)
